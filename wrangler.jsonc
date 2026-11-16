@@ -18,5 +18,12 @@
 	"ai": {
 		"binding": "AI"
 	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "vesper-memory",
+			"database_id": "1787f25a-2e49-406f-b193-bcb0fa3400de"
+		}
+	],
 	"upload_source_maps": true
 }

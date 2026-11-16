@@ -12,6 +12,11 @@ export interface Env {
 	 * Binding for static assets.
 	 */
 	ASSETS: { fetch: (request: Request) => Promise<Response> };
+
+	/**
+	 * Binding for the D1 database that stores conversation memory.
+	 */
+	DB: D1Database;
 }
 
 /**
