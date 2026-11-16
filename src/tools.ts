@@ -16,7 +16,7 @@
  */
 
 import type { Env } from "./types";
-import { getDeviceStatus } from "./devices";
+import { getDeviceStatus, runDeviceCommand } from "./devices";
 
 export const TOOL_NAMES = [
 	"get_weather",
@@ -24,6 +24,7 @@ export const TOOL_NAMES = [
 	"calculate",
 	"get_datetime",
 	"get_device_status",
+	"run_device_command",
 ] as const;
 
 /**
@@ -136,6 +137,37 @@ export const TOOL_DEFINITIONS: FunctionTool[] = [
 			},
 		},
 	},
+	{
+		type: "function",
+		function: {
+			name: "run_device_command",
+			description:
+				"Do something on the user's paired Windows laptop through the companion app: open an approved app, or search an approved folder for a file by name. The app only runs what the user has allowlisted; anything else is refused and the refusal is reported back. Use it only when the user asks for an action on their laptop.",
+			parameters: {
+				type: "object",
+				properties: {
+					action: {
+						type: "string",
+						enum: ["open_app", "search_files"],
+						description: "open_app to launch an app, search_files to find files by name.",
+					},
+					app: {
+						type: "string",
+						description: "App name for open_app, e.g. 'notepad', 'calculator', 'chrome'.",
+					},
+					folder: {
+						type: "string",
+						description: "Folder for search_files: a friendly name like 'Desktop', 'Documents', 'Downloads', or a full path.",
+					},
+					query: {
+						type: "string",
+						description: "File name text to look for in search_files, e.g. 'homework' or 'report.docx'.",
+					},
+				},
+				required: ["action"],
+			},
+		},
+	},
 ];
 
 /**
@@ -172,6 +204,13 @@ export async function executeTool(
 					});
 				}
 				return await getDeviceStatus(env);
+			case "run_device_command":
+				if (!env) {
+					return JSON.stringify({
+						error: "Device commands are unavailable.",
+					});
+				}
+				return await runDeviceCommand(env, args);
 			default:
 				return JSON.stringify({ error: `Unknown tool: ${name}` });
 		}

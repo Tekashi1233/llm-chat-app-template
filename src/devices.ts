@@ -363,8 +363,7 @@ async function handleResult(request: Request, env: Env): Promise<Response> {
  * Reads the latest status of the most recently seen paired device.
  * Used by the get_device_status model tool. Returns a short JSON
  * string the model turns into a plain-words answer.
- */
-export async function getDeviceStatus(env: Env): Promise<string> {
+ */export async function getDeviceStatus(env: Env): Promise<string> {
 	try {
 		if (!env.DB) {
 			return JSON.stringify({
@@ -418,6 +417,135 @@ export async function getDeviceStatus(env: Env): Promise<string> {
 		return JSON.stringify({
 			online: false,
 			reason: `Could not read device status: ${error instanceof Error ? error.message : "unknown error"}`,
+		});
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Command queue (Milestone 2) — run_device_command model tool
+// ---------------------------------------------------------------------------
+
+/** The most recently seen paired device, if there is one. */
+async function getPairedDevice(
+	env: Env,
+): Promise<{ id: string; name: string | null } | null> {
+	if (!env.DB) return null;
+	const row = await env.DB.prepare(
+		"SELECT id, name FROM devices WHERE status = 'paired' ORDER BY last_seen DESC LIMIT 1",
+	).first<{ id: string; name: string | null }>();
+	return row ?? null;
+}
+
+/**
+ * Runs a command on the paired laptop, from the model.
+ *
+ * The command is put in the D1 queue; the companion app polls the
+ * queue every few seconds, runs it if it is allowed, and reports
+ * the result back. This function waits for that result, but only
+ * up to ~12 seconds: a chat request must finish well inside the
+ * Worker's request time limit. If the laptop does not answer in
+ * time, the model is told to say so and the user can ask again.
+ * The command stays in the queue either way — the app still runs
+ * it when it polls, and the result is logged in device_actions.
+ */
+export async function runDeviceCommand(
+	env: Env,
+	args: Record<string, unknown>,
+): Promise<string> {
+	try {
+		const action = String(args.action ?? "");
+		if (action !== "open_app" && action !== "search_files") {
+			return JSON.stringify({
+				error: "Unknown action. Use open_app or search_files.",
+			});
+		}
+		if (!env.DB) {
+			return JSON.stringify({ error: "Device memory is unavailable." });
+		}
+		const device = await getPairedDevice(env);
+		if (!device) {
+			return JSON.stringify({
+				error:
+					"No laptop is paired with VESPER yet. Pair the Windows Companion app first.",
+			});
+		}
+		// Stale check: a laptop that has not been heard from in two
+		// minutes is probably off or the app is closed.
+		const seen = await env.DB.prepare(
+			"SELECT last_seen FROM devices WHERE id = ?1",
+		)
+			.bind(device.id)
+			.first<{ last_seen: number | null }>();
+		const ageSeconds = seen?.last_seen
+			? Math.max(0, Math.round((Date.now() - seen.last_seen) / 1000))
+			: 99999;
+		if (ageSeconds > 120) {
+			return JSON.stringify({
+				error: `The laptop '${device.name ?? device.id}' was last seen ${ageSeconds} seconds ago. It looks off, or the companion app is not running. Ask the user to open the companion app on the laptop and try again.`,
+			});
+		}
+		const payload: Record<string, unknown> = { action };
+		if (action === "open_app") {
+			const app = String(args.app ?? "").trim();
+			if (!app) {
+				return JSON.stringify({ error: "No app name given." });
+			}
+			payload.app = app;
+		} else {
+			const folder = String(args.folder ?? "").trim();
+			const query = String(args.query ?? "").trim();
+			if (!folder || !query) {
+				return JSON.stringify({
+					error: "A search needs both a folder and something to look for.",
+				});
+			}
+			payload.folder = folder;
+			payload.query = query;
+		}
+		const now = Date.now();
+		const inserted = await env.DB.prepare(
+			"INSERT INTO device_commands (device_id, kind, payload, status, created_at) VALUES (?1, ?2, ?3, 'pending', ?4) RETURNING id",
+		)
+			.bind(device.id, action, JSON.stringify(payload), now)
+			.first<{ id: number }>();
+		if (!inserted) {
+			return JSON.stringify({ error: "Could not queue the command." });
+		}
+		// Wait for the app to run it and report back.
+		const deadline = Date.now() + 12_000;
+		for (;;) {
+			const row = await env.DB.prepare(
+				"SELECT status, result FROM device_commands WHERE id = ?1",
+			)
+				.bind(inserted.id)
+				.first<{ status: string; result: string | null }>();
+			if (row && (row.status === "done" || row.status === "failed")) {
+				let parsed: unknown = row.result ?? "";
+				try {
+					parsed = JSON.parse(row.result ?? "");
+				} catch {
+					parsed = row.result ?? "";
+				}
+				return JSON.stringify({
+					action,
+					ok: row.status === "done",
+					result: parsed,
+				});
+			}
+			if (Date.now() >= deadline) {
+				return JSON.stringify({
+					action,
+					ok: false,
+					waiting: true,
+					message:
+						"The command was sent to the laptop, but it has not answered yet. Tell the user to check the companion app is running and ask again in a moment.",
+				});
+			}
+			await new Promise((resolve) => setTimeout(resolve, 2000));
+		}
+	} catch (error) {
+		return JSON.stringify({
+			error: `Command failed: ${error instanceof Error ? error.message : "unknown error"}`,
 		});
 	}
 }
