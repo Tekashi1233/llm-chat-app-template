@@ -24,7 +24,8 @@ export const TOOL_NAMES = [
 	"calculate",
 	"get_datetime",
 	"get_device_status",
-	"run_device_command",
+	"open_app",
+	"search_files",
 ] as const;
 
 /**
@@ -140,31 +141,40 @@ export const TOOL_DEFINITIONS: FunctionTool[] = [
 	{
 		type: "function",
 		function: {
-			name: "run_device_command",
+			name: "open_app",
 			description:
-				"Do something on the user's paired Windows laptop through the companion app: open an approved app, or search an approved folder for a file by name. The app only runs what the user has allowlisted; anything else is refused and the refusal is reported back. Use it only when the user asks for an action on their laptop.",
+				"Open an app on the user's paired Windows laptop through the companion app. Use it when the user asks to open or launch an app, e.g. 'open Notepad'. The app only opens what the user has allowlisted; anything else is refused and the refusal is reported back.",
 			parameters: {
 				type: "object",
 				properties: {
-					action: {
-						type: "string",
-						enum: ["open_app", "search_files"],
-						description: "open_app to launch an app, search_files to find files by name.",
-					},
 					app: {
 						type: "string",
-						description: "App name for open_app, e.g. 'notepad', 'calculator', 'chrome'.",
+						description: "App name, e.g. 'notepad', 'calculator', 'chrome'.",
 					},
+				},
+				required: ["app"],
+			},
+		},
+	},
+	{
+		type: "function",
+		function: {
+			name: "search_files",
+			description:
+				"Find files by name in a folder on the user's paired Windows laptop, through the companion app. Use it when the user asks to find, locate, or search for a file on their laptop, e.g. 'find my homework file in Documents'. The app only searches folders the user has allowlisted; anything else is refused and the refusal is reported back.",
+			parameters: {
+				type: "object",
+				properties: {
 					folder: {
 						type: "string",
-						description: "Folder for search_files: a friendly name like 'Desktop', 'Documents', 'Downloads', or a full path.",
+						description: "Folder to search: a friendly name like 'Desktop', 'Documents', 'Downloads', or a full path.",
 					},
 					query: {
 						type: "string",
-						description: "File name text to look for in search_files, e.g. 'homework' or 'report.docx'.",
+						description: "File name text to look for, e.g. 'homework' or 'report.docx'.",
 					},
 				},
-				required: ["action"],
+				required: ["folder", "query"],
 			},
 		},
 	},
@@ -204,13 +214,14 @@ export async function executeTool(
 					});
 				}
 				return await getDeviceStatus(env);
-			case "run_device_command":
+			case "open_app":
+			case "search_files":
 				if (!env) {
 					return JSON.stringify({
 						error: "Device commands are unavailable.",
 					});
 				}
-				return await runDeviceCommand(env, args);
+				return await runDeviceCommand(env, name, args);
 			default:
 				return JSON.stringify({ error: `Unknown tool: ${name}` });
 		}

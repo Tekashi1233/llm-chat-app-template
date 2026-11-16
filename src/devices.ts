@@ -447,18 +447,15 @@ async function getPairedDevice(
  * time, the model is told to say so and the user can ask again.
  * The command stays in the queue either way — the app still runs
  * it when it polls, and the result is logged in device_actions.
+ *
+ * `action` is "open_app" or "search_files" (one tool per action,
+ * so the model picks the right one).
  */
 export async function runDeviceCommand(
 	env: Env,
+	action: string,
 	args: Record<string, unknown>,
 ): Promise<string> {
-	try {
-		const action = String(args.action ?? "");
-		if (action !== "open_app" && action !== "search_files") {
-			return JSON.stringify({
-				error: "Unknown action. Use open_app or search_files.",
-			});
-		}
 		if (!env.DB) {
 			return JSON.stringify({ error: "Device memory is unavailable." });
 		}
