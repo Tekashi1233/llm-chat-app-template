@@ -9,6 +9,11 @@
  */
 import { Env, ChatMessage } from "./types";
 import { TOOL_DEFINITIONS, TOOL_NAMES, executeTool } from "./tools";
+import {
+	checkAuth,
+	checkRateLimit,
+	RATE_LIMITS,
+} from "./security";
 
 // Model ID for Workers AI model
 // https://developers.cloudflare.com/workers-ai/models/
@@ -74,7 +79,7 @@ export default {
 				headers: {
 					"Access-Control-Allow-Origin": "*",
 					"Access-Control-Allow-Methods": "POST, OPTIONS",
-					"Access-Control-Allow-Headers": "Content-Type",
+					"Access-Control-Allow-Headers": "Content-Type, X-Vesper-Key",
 				},
 			});
 		}
@@ -97,6 +102,8 @@ export default {
 						reasoning_effort: REASONING_EFFORT,
 						streaming: true,
 						tools: TOOL_NAMES,
+						auth: "x-vesper-key",
+						rate_limits: RATE_LIMITS,
 						memory: env.DB ? "d1" : "disabled",
 						status: "configured",
 					}),
@@ -121,6 +128,15 @@ export default {
 
 			// Method not allowed for other request types
 			return new Response("Method not allowed", { status: 405 });
+		}
+
+		if (url.pathname === "/api/backup") {
+			// Full memory export as JSON, protected by the same key
+			// and rate limit as chat. GET only.
+			if (request.method !== "GET") {
+				return new Response("Method not allowed", { status: 405 });
+			}
+			return handleBackupRequest(request, env);
 		}
 
 		// Handle 404 for unmatched routes
@@ -164,6 +180,36 @@ async function handleChatRequest(
 	ctx: ExecutionContext,
 ): Promise<Response> {
 	try {
+		// Phase 7 protection, before any model work: rate limit first
+		// (per IP, so one abusive address cannot flood the quota),
+		// then the API key.
+		const limit = await checkRateLimit(request, env);
+		if (!limit.ok) {
+			return new Response(
+				JSON.stringify({
+					error: "Too many requests. Please wait a minute and try again.",
+				}),
+				{
+					status: 429,
+					headers: {
+						"content-type": "application/json",
+						"Retry-After": String(limit.retryAfter ?? 60),
+						"Access-Control-Allow-Origin": "*",
+					},
+				},
+			);
+		}
+		const auth = await checkAuth(request, env);
+		if (!auth.ok) {
+			return new Response(JSON.stringify({ error: "Unauthorized" }), {
+				status: 401,
+				headers: {
+					"content-type": "application/json",
+					"Access-Control-Allow-Origin": "*",
+				},
+			});
+		}
+
 		// Parse JSON request body
 		const { messages = [], conversation_id = "default" } = (await request.json()) as {
 			messages: ChatMessage[];
@@ -283,6 +329,74 @@ async function handleChatRequest(
 				headers: { "content-type": "application/json" },
 			},
 		);
+	}
+}
+
+/**
+ * Exports the whole D1 memory table as JSON. Same protection as
+ * chat: rate limit first, then the API key. GET only.
+ */
+async function handleBackupRequest(
+	request: Request,
+	env: Env,
+): Promise<Response> {
+	const jsonHeaders = {
+		"content-type": "application/json",
+		"Access-Control-Allow-Origin": "*",
+	};
+	try {
+		const limit = await checkRateLimit(request, env);
+		if (!limit.ok) {
+			return new Response(
+				JSON.stringify({
+					error: "Too many requests. Please wait a minute and try again.",
+				}),
+				{
+					status: 429,
+					headers: {
+						...jsonHeaders,
+						"Retry-After": String(limit.retryAfter ?? 60),
+					},
+				},
+			);
+		}
+		const auth = await checkAuth(request, env);
+		if (!auth.ok) {
+			return new Response(JSON.stringify({ error: "Unauthorized" }), {
+				status: 401,
+				headers: jsonHeaders,
+			});
+		}
+		if (!env.DB) {
+			return new Response(
+				JSON.stringify({ exported_at: new Date().toISOString(), count: 0, messages: [] }),
+				{ headers: jsonHeaders },
+			);
+		}
+		const rows = await env.DB.prepare(
+			"SELECT id, conversation_id, role, content, created_at FROM messages ORDER BY id ASC LIMIT 5000",
+		).all<{
+			id: number;
+			conversation_id: string;
+			role: string;
+			content: string;
+			created_at: number;
+		}>();
+		const messages = rows.results ?? [];
+		return new Response(
+			JSON.stringify({
+				exported_at: new Date().toISOString(),
+				count: messages.length,
+				messages,
+			}),
+			{ headers: jsonHeaders },
+		);
+	} catch (error) {
+		console.error("Error processing backup request:", error);
+		return new Response(JSON.stringify({ error: "Failed to export" }), {
+			status: 500,
+			headers: jsonHeaders,
+		});
 	}
 }
 

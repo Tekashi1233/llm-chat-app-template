@@ -61,6 +61,10 @@ body{font-family:var(--font);color:var(--ink)}
 <script>
 // Permanent Tailscale Funnel + n8n production webhook.
 const WORKER_URL = "https://llm-chat-app-template.thanosabdulla.workers.dev/api/chat";
+// Site key for the Worker API (Phase 7). It stops random abuse of the
+// free quota; anyone reading this page source can see it, so the
+// Worker also rate-limits each visitor. Never paste this key in chat.
+const VESPER_KEY = "f186b1d6dfab14b688e268acf67533043657a211f4a389f2b5d38ecc7a95778c";
 
 // One conversation per browser, kept across visits so VESPER remembers it.
 let conversationId = localStorage.getItem('vesper_conversation_id');
@@ -357,10 +361,14 @@ async function ask(text){
     try {
       const r = await fetch(WORKER_URL, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {'Content-Type': 'application/json', 'X-Vesper-Key': VESPER_KEY},
         body: JSON.stringify({messages: [{role: 'user', content: text}], conversation_id: conversationId})
       });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok){
+        if (r.status === 401) throw new Error('Not authorised — the site key is missing or wrong. Re-upload the latest page.');
+        if (r.status === 429) throw new Error('Slow down — too many messages at once. Wait a minute and try again.');
+        throw new Error('HTTP ' + r.status);
+      }
       const reader = r.body.getReader();
       const dec = new TextDecoder();
       let buf = '', out = '', finished = false;
