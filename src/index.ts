@@ -60,6 +60,8 @@ Tools:
   (read a text file in an approved folder).
 - Use a tool when the user asks for the weather, a fact you may not
   know, a calculation, or the time or date. Do not guess these.
+  When you need a tool, call it through the tool-calling feature —
+  never write the tool call out as plain text.
 - Use get_device_status when the user asks about their laptop,
   computer, or PC, or whether it is on. If it says the laptop is
   off or not paired, say so plainly and say what to do: run the
@@ -208,6 +210,52 @@ type DecisionResponse = {
 	}>;
 };
 
+type ToolCall = {
+	id: string;
+	type: string;
+	function: { name: string; arguments: string };
+};
+
+/**
+ * Recovers a tool call the model wrote out as plain text instead of
+ * using the tool-calling channel, e.g.
+ *   {"name": "create_file", "arguments": {"path": "...", ...}}
+ * Returns null unless the text holds a JSON object naming a real
+ * tool with an object of arguments.
+ */
+function parseTextToolCall(
+	text: string,
+): ToolCall | null {
+	const start = text.indexOf("{");
+	const end = text.lastIndexOf("}");
+	if (start < 0 || end <= start) return null;
+	try {
+		const parsed = JSON.parse(text.slice(start, end + 1)) as {
+			name?: unknown;
+			arguments?: unknown;
+		};
+		if (
+			typeof parsed.name !== "string" ||
+			!(TOOL_NAMES as readonly string[]).includes(parsed.name) ||
+			typeof parsed.arguments !== "object" ||
+			parsed.arguments === null ||
+			Array.isArray(parsed.arguments)
+		) {
+			return null;
+		}
+		return {
+			id: "text-call-1",
+			type: "function",
+			function: {
+				name: parsed.name,
+				arguments: JSON.stringify(parsed.arguments),
+			},
+		};
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Handles chat API requests.
  *
@@ -278,15 +326,24 @@ async function handleChatRequest(
 			messages: modelMessages,
 			tools: TOOL_DEFINITIONS,
 			tool_choice: "auto",
-			max_tokens: 512,
+			max_tokens: 1024,
 			reasoning_effort: REASONING_EFFORT,
 		})) as unknown as DecisionResponse;
 
 		const decisionMessage = decision.choices?.[0]?.message;
-		const toolCalls = (decisionMessage?.tool_calls ?? []).filter(
+		let toolCalls = (decisionMessage?.tool_calls ?? []).filter(
 			(call) => call.type === "function",
 		);
 		const decisionText = decisionMessage?.content ?? "";
+		if (toolCalls.length === 0) {
+			// GPT-OSS-20B sometimes writes the tool call out as plain
+			// text ({"name": "...", "arguments": {...}}) instead of
+			// using the tool-calling channel. A call written out
+			// like that is still a call: run it rather than showing
+			// the raw JSON to the user.
+			const textCall = parseTextToolCall(decisionText);
+			if (textCall) toolCalls = [textCall];
+		}
 
 		let clientStream: ReadableStream<Uint8Array>;
 		if (toolCalls.length === 0) {
