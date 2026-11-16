@@ -8,6 +8,7 @@
  * @license MIT
  */
 import { Env, ChatMessage } from "./types";
+import { TOOL_DEFINITIONS, TOOL_NAMES, executeTool } from "./tools";
 
 // Model ID for Workers AI model
 // https://developers.cloudflare.com/workers-ai/models/
@@ -38,6 +39,15 @@ Behaviour:
 - Never claim to have performed an action you haven't performed.
 - You can see earlier messages from this conversation; use them when
   relevant instead of asking the user to repeat things.
+
+Tools:
+- You have tools: get_weather (current weather for any city),
+  search_web (look up a topic on Wikipedia), calculate (maths),
+  get_datetime (current date and time).
+- Use a tool when the user asks for the weather, a fact you may not
+  know, a calculation, or the time or date. Do not guess these.
+- After a tool returns a result, answer from that result in plain
+  words. Never claim a tool result you did not actually get.
 
 Identity:
 - Your name is VESPER.
@@ -86,6 +96,7 @@ export default {
 						configured_model: MODEL_ID,
 						reasoning_effort: REASONING_EFFORT,
 						streaming: true,
+						tools: TOOL_NAMES,
 						memory: env.DB ? "d1" : "disabled",
 						status: "configured",
 					}),
@@ -118,7 +129,34 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 /**
- * Handles chat API requests
+ * Shape of the non-streaming reply used to decide whether a tool
+ * is needed. env.AI.run returns a union of output types, so the
+ * tool-decision reply is read through this narrow shape.
+ */
+type DecisionResponse = {
+	choices?: Array<{
+		message?: {
+			content?: string | null;
+			tool_calls?: Array<{
+				id: string;
+				type: string;
+				function: { name: string; arguments: string };
+			}>;
+		};
+		finish_reason?: string;
+	}>;
+};
+
+/**
+ * Handles chat API requests.
+ *
+ * Two steps, so the model can use tools:
+ * 1. A short non-streaming call with the tools attached. The model
+ *    either answers directly or asks for tool calls.
+ * 2. If tools were asked for, run them (at most 3, one round only),
+ *    then stream the final answer with the results included.
+ * When no tool is needed, the first call's own text is streamed back
+ * as SSE, so the frontend contract never changes.
  */
 async function handleChatRequest(
 	request: Request,
@@ -144,38 +182,91 @@ async function handleChatRequest(
 		modelMessages.push(...history);
 		modelMessages.push(...messages);
 
-		// Typed by env.AI.run below against this model's own input
-		// shape (ChatCompletionsMessagesInput), which is the type that
-		// carries reasoning_effort; the generic AiTextGenerationInput
-		// does not include it.
-		const inputs = {
+		// Step 1: tool decision (non-streaming, small budget)
+		const decision = (await env.AI.run<typeof MODEL_ID>(MODEL_ID, {
 			messages: modelMessages,
-			max_tokens: 1024,
+			tools: TOOL_DEFINITIONS,
+			tool_choice: "auto",
+			max_tokens: 512,
 			reasoning_effort: REASONING_EFFORT,
-			stream: true,
-		};
+		})) as unknown as DecisionResponse;
 
-		const stream = await env.AI.run<typeof MODEL_ID>(MODEL_ID, inputs, {
-			// Uncomment to use AI Gateway
-			// gateway: {
-			//   id: "YOUR_GATEWAY_ID", // Replace with your AI Gateway ID
-			//   skipCache: false,      // Set to true to bypass cache
-			//   cacheTtl: 3600,        // Cache time-to-live in seconds
-			// },
-		});
+		const decisionMessage = decision.choices?.[0]?.message;
+		const toolCalls = (decisionMessage?.tool_calls ?? []).filter(
+			(call) => call.type === "function",
+		);
+		const decisionText = decisionMessage?.content ?? "";
+
+		let clientStream: ReadableStream<Uint8Array>;
+		if (toolCalls.length === 0) {
+			// No tool needed: stream the decision's own text as SSE
+			clientStream = textToSseStream(
+				decisionText ||
+					"Sorry, I didn't manage to answer that. Could you try again?",
+			);
+		} else {
+			// Step 2: run the tools, then stream the final answer
+			const calls = toolCalls.slice(0, 3);
+			const toolMessages: ChatMessage[] = [];
+			for (const call of calls) {
+				let args: Record<string, unknown> = {};
+				try {
+					args = JSON.parse(call.function.arguments || "{}") as Record<
+						string,
+						unknown
+					>;
+				} catch {
+					args = {};
+				}
+				const result = await executeTool(call.function.name, args);
+				toolMessages.push({
+					role: "tool",
+					content: result,
+					tool_call_id: call.id,
+				});
+			}
+			const assistantMessage: ChatMessage = {
+				role: "assistant",
+				content: decisionText || "",
+				tool_calls: calls.map((call) => ({
+					id: call.id,
+					type: "function" as const,
+					function: {
+						name: call.function.name,
+						arguments: call.function.arguments,
+					},
+				})),
+			};
+			const stream = await env.AI.run<typeof MODEL_ID>(
+				MODEL_ID,
+				{
+					messages: [...modelMessages, assistantMessage, ...toolMessages],
+					max_tokens: 1024,
+					reasoning_effort: REASONING_EFFORT,
+					stream: true,
+				},
+				{
+					// Uncomment to use AI Gateway
+					// gateway: {
+					//   id: "YOUR_GATEWAY_ID", // Replace with your AI Gateway ID
+					//   skipCache: false,      // Set to true to bypass cache
+					//   cacheTtl: 3600,        // Cache time-to-live in seconds
+					// },
+				},
+			);
+			clientStream = stream as ReadableStream<Uint8Array>;
+		}
 
 		// Split the stream: one branch goes to the browser, the other is
 		// read in the background so the full reply can be saved to memory
-		const [clientStream, memoryStream] = (
-			stream as ReadableStream<Uint8Array>
-		).tee();
+		const [clientBranch, memoryBranch] = clientStream.tee();
 		ctx.waitUntil(
-			saveConversation(env, conversation_id, messages, memoryStream).catch(
+			saveConversation(env, conversation_id, messages, memoryBranch).catch(
 				(err) => console.error("Failed to save conversation:", err),
 			),
 		);
 
-		return new Response(clientStream, {
+		return new Response(clientBranch, {
 			headers: {
 				"content-type": "text/event-stream; charset=utf-8",
 				"cache-control": "no-cache",
@@ -193,6 +284,23 @@ async function handleChatRequest(
 			},
 		);
 	}
+}
+
+/**
+ * Wraps plain text in the same SSE shape the streaming replies use,
+ * so the frontend can read it unchanged.
+ */
+function textToSseStream(text: string): ReadableStream<Uint8Array> {
+	const encoder = new TextEncoder();
+	const payload =
+		`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n` +
+		"data: [DONE]\n\n";
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(encoder.encode(payload));
+			controller.close();
+		},
+	});
 }
 
 // How many past messages to recall for the model (10 exchanges)

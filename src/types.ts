@@ -20,9 +20,16 @@ export interface Env {
 }
 
 /**
- * Represents a chat message.
+ * Represents a chat message. Tool messages carry the id of the tool
+ * call they answer; assistant messages may carry tool calls.
  */
-export interface ChatMessage {
-	role: "system" | "user" | "assistant";
-	content: string;
-}
+export type ToolCall = {
+	id: string;
+	type: "function";
+	function: { name: string; arguments: string };
+};
+
+export type ChatMessage =
+	| { role: "system" | "user"; content: string }
+	| { role: "assistant"; content: string; tool_calls?: ToolCall[] }
+	| { role: "tool"; content: string; tool_call_id: string };
