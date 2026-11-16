@@ -9,6 +9,7 @@
  */
 import { Env, ChatMessage } from "./types";
 import { TOOL_DEFINITIONS, TOOL_NAMES, executeTool } from "./tools";
+import { handleDevicesRequest } from "./devices";
 import {
 	checkAuth,
 	checkRateLimit,
@@ -48,9 +49,15 @@ Behaviour:
 Tools:
 - You have tools: get_weather (current weather for any city),
   search_web (look up a topic on Wikipedia), calculate (maths),
-  get_datetime (current date and time).
+  get_datetime (current date and time), get_device_status
+  (the paired Windows laptop: is it on, CPU, memory, disks,
+  network, from the companion app's latest heartbeat).
 - Use a tool when the user asks for the weather, a fact you may not
   know, a calculation, or the time or date. Do not guess these.
+- Use get_device_status when the user asks about their laptop,
+  computer, or PC, or whether it is on. If it says the laptop is
+  off or not paired, say so plainly and say what to do: run the
+  companion app on the laptop and pair it.
 - After a tool returns a result, answer from that result in plain
   words. Never claim a tool result you did not actually get.
 
@@ -78,8 +85,9 @@ export default {
 			return new Response(null, {
 				headers: {
 					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Methods": "POST, OPTIONS",
-					"Access-Control-Allow-Headers": "Content-Type, X-Vesper-Key",
+					"Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+					"Access-Control-Allow-Headers":
+						"Content-Type, X-Vesper-Key, X-Vesper-Device",
 				},
 			});
 		}
@@ -137,6 +145,14 @@ export default {
 				return new Response("Method not allowed", { status: 405 });
 			}
 			return handleBackupRequest(request, env);
+		}
+
+		if (url.pathname.startsWith("/api/devices/")) {
+			// Windows Companion device endpoints (pair, confirm,
+			// heartbeat, command queue, results). Auth is handled
+			// inside: site key for pair/confirm, device secret
+			// for the rest.
+			return handleDevicesRequest(request, env);
 		}
 
 		// Handle 404 for unmatched routes
@@ -264,7 +280,7 @@ async function handleChatRequest(
 				} catch {
 					args = {};
 				}
-				const result = await executeTool(call.function.name, args);
+				const result = await executeTool(call.function.name, args, env);
 				toolMessages.push({
 					role: "tool",
 					content: result,

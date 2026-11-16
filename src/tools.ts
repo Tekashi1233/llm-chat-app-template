@@ -7,17 +7,23 @@
  * - search_web: Wikipedia search + article summary, no key required.
  * - calculate: a small maths parser (no eval).
  * - get_datetime: current date/time in any IANA timezone.
+ * - get_device_status: the paired Windows laptop's CPU, RAM, disks
+ *   and network, from its latest companion-app heartbeat (needs D1).
  *
  * Every tool returns a short JSON string the model reads and turns
  * into a plain-words answer. A tool never throws: on any failure it
  * returns an error message string instead.
  */
 
+import type { Env } from "./types";
+import { getDeviceStatus } from "./devices";
+
 export const TOOL_NAMES = [
 	"get_weather",
 	"search_web",
 	"calculate",
 	"get_datetime",
+	"get_device_status",
 ] as const;
 
 /**
@@ -117,15 +123,30 @@ export const TOOL_DEFINITIONS: FunctionTool[] = [
 			},
 		},
 	},
+	{
+		type: "function",
+		function: {
+			name: "get_device_status",
+			description:
+				"Check whether the user's paired Windows laptop is on and how it is doing: CPU, memory, disks and network, from the companion app's latest heartbeat. Use it when the user asks about their laptop, computer, PC, or whether it is on.",
+			parameters: {
+				type: "object",
+				properties: {},
+				required: [],
+			},
+		},
+	},
 ];
 
 /**
  * Runs one tool by name with parsed JSON arguments.
  * Returns a short JSON string for the model. Never throws.
+ * `env` is needed by tools that read D1 (get_device_status).
  */
 export async function executeTool(
 	name: string,
 	args: Record<string, unknown>,
+	env?: Env,
 ): Promise<string> {
 	try {
 		switch (name) {
@@ -144,6 +165,13 @@ export async function executeTool(
 						? args.timezone
 						: "Asia/Riyadh",
 				);
+			case "get_device_status":
+				if (!env) {
+					return JSON.stringify({
+						error: "Device status is unavailable.",
+					});
+				}
+				return await getDeviceStatus(env);
 			default:
 				return JSON.stringify({ error: `Unknown tool: ${name}` });
 		}
