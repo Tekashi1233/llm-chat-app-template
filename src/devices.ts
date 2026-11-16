@@ -351,10 +351,25 @@ async function handleResult(request: Request, env: Env): Promise<Response> {
 	)
 		.bind(ok ? "done" : "failed", result, now, commandId, auth.device.id)
 		.run();
-	await env.DB.prepare(
-		"INSERT INTO device_actions (device_id, kind, detail, approved, created_at) VALUES (?1, 'command_result', ?2, 1, ?3)",
+	// Log the action for history: the command's kind and its
+	// outcome, so "what did you do on my laptop?" has a real
+	// answer. approved = 1 when the action ran (allowlisted, or
+	// the user clicked Allow); 0 when it was refused or failed.
+	const cmd = await env.DB.prepare(
+		"SELECT kind FROM device_commands WHERE id = ?1 AND device_id = ?2",
 	)
-		.bind(auth.device.id, `command ${commandId}: ${ok ? "done" : "failed"}`, now)
+		.bind(commandId, auth.device.id)
+		.first<{ kind: string }>();
+	await env.DB.prepare(
+		"INSERT INTO device_actions (device_id, kind, detail, approved, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+	)
+		.bind(
+			auth.device.id,
+			cmd?.kind ?? "command_result",
+			result.slice(0, 500),
+			ok ? 1 : 0,
+			now,
+		)
 		.run();
 	return json({ ok: true });
 }
@@ -417,6 +432,61 @@ async function handleResult(request: Request, env: Env): Promise<Response> {
 		return JSON.stringify({
 			online: false,
 			reason: `Could not read device status: ${error instanceof Error ? error.message : "unknown error"}`,
+		});
+	}
+}
+
+/**
+ * What VESPER has done on the paired laptop lately, newest
+ * first. Reads the device_actions log the companion app writes
+ * every time a command finishes (or is refused). No queue, no
+ * wait — a direct read, so the user can ask "what did you do
+ * on my laptop?" and get a straight answer.
+ */
+export async function getActionHistory(env: Env): Promise<string> {
+	try {
+		if (!env.DB) {
+			return JSON.stringify({ error: "Device memory is unavailable." });
+		}
+		const device = await getPairedDevice(env);
+		if (!device) {
+			return JSON.stringify({
+				error:
+					"No laptop is paired with VESPER yet. Pair the Windows Companion app first.",
+			});
+		}
+		const rows = await env.DB.prepare(
+			"SELECT kind, detail, approved, created_at FROM device_actions WHERE device_id = ?1 ORDER BY id DESC LIMIT 15",
+		)
+			.bind(device.id)
+			.all<{
+				kind: string;
+				detail: string;
+				approved: number;
+				created_at: number;
+			}>();
+		const now = Date.now();
+		const actions = (rows.results ?? []).map((row) => {
+			const ageSeconds = Math.max(0, Math.round((now - row.created_at) / 1000));
+			const when =
+				ageSeconds < 60
+					? `${ageSeconds} seconds ago`
+					: ageSeconds < 3600
+						? `${Math.round(ageSeconds / 60)} minutes ago`
+						: ageSeconds < 86400
+							? `${Math.round(ageSeconds / 3600)} hours ago`
+							: `${Math.round(ageSeconds / 86400)} days ago`;
+			return {
+				when,
+				kind: row.kind,
+				detail: row.detail,
+				allowed: row.approved === 1,
+			};
+		});
+		return JSON.stringify({ actions });
+	} catch (error) {
+		return JSON.stringify({
+			error: `Could not read the history: ${error instanceof Error ? error.message : "unknown error"}`,
 		});
 	}
 }
@@ -488,6 +558,7 @@ export async function runDeviceCommand(
 			"create_file",
 			"edit_file",
 			"read_file",
+			"run_command",
 		];
 		if (!allowedActions.includes(action)) {
 			return JSON.stringify({ error: `Unknown action: ${action}.` });
@@ -551,13 +622,26 @@ export async function runDeviceCommand(
 			payload.mode = mode;
 			payload.old_text = oldText;
 			payload.new_text = newText;
-		} else {
-			// read_file
+		} else if (action === "read_file") {
 			const path = String(args.path ?? "").trim();
 			if (!path) {
 				return JSON.stringify({ error: "No file path given." });
 			}
 			payload.path = path;
+		} else {
+			// run_command
+			const command = String(args.command ?? "").trim();
+			const arg = String(args.arg ?? "").trim();
+			if (!command) {
+				return JSON.stringify({ error: "No command name given." });
+			}
+			if (arg.length > 200) {
+				return JSON.stringify({
+					error: "That argument is too long.",
+				});
+			}
+			payload.command = command;
+			payload.arg = arg;
 		}
 		const now = Date.now();
 		const inserted = await env.DB.prepare(

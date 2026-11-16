@@ -16,7 +16,7 @@
  */
 
 import type { Env } from "./types";
-import { getDeviceStatus, runDeviceCommand } from "./devices";
+import { getActionHistory, getDeviceStatus, runDeviceCommand } from "./devices";
 
 export const TOOL_NAMES = [
 	"get_weather",
@@ -29,6 +29,8 @@ export const TOOL_NAMES = [
 	"create_file",
 	"edit_file",
 	"read_file",
+	"run_command",
+	"get_action_history",
 ] as const;
 
 /**
@@ -252,6 +254,41 @@ export const TOOL_DEFINITIONS: FunctionTool[] = [
 			},
 		},
 	},
+	{
+		type: "function",
+		function: {
+			name: "run_command",
+			description:
+				"Run an approved command on the user's paired Windows laptop, through the companion app, and get its output back. Use it when the user asks for something a command does, e.g. 'ping google.com' or 'show my network info'. The app only runs commands the user has allowlisted; anything else is refused and the refusal is reported back. Commands are read-only by design (network info, ping, listing programs or folders).",
+			parameters: {
+				type: "object",
+				properties: {
+					command: {
+						type: "string",
+						description: "Command name from the approved list, e.g. 'ping', 'network info', 'list programs', 'list folder'.",
+					},
+					arg: {
+						type: "string",
+						description: "The one argument the command needs, if any: a host to ping like 'google.com', or a folder to list like 'Downloads'. Leave it out for commands that need none.",
+					},
+				},
+				required: ["command"],
+			},
+		},
+	},
+	{
+		type: "function",
+		function: {
+			name: "get_action_history",
+			description:
+				"What VESPER has done on the user's paired Windows laptop lately, newest first: apps opened, files created or changed, commands run, and anything refused. Use it when the user asks what you did, what happened on their laptop, or for a recap of recent actions.",
+			parameters: {
+				type: "object",
+				properties: {},
+				required: [],
+			},
+		},
+	},
 ];
 
 /**
@@ -293,12 +330,20 @@ export async function executeTool(
 			case "create_file":
 			case "edit_file":
 			case "read_file":
+			case "run_command":
 				if (!env) {
 					return JSON.stringify({
 						error: "Device commands are unavailable.",
 					});
 				}
 				return await runDeviceCommand(env, name, args);
+			case "get_action_history":
+				if (!env) {
+					return JSON.stringify({
+						error: "Device history is unavailable.",
+					});
+				}
+				return await getActionHistory(env);
 			default:
 				return JSON.stringify({ error: `Unknown tool: ${name}` });
 		}
