@@ -465,6 +465,29 @@ export async function getActionHistory(env: Env): Promise<string> {
 				approved: number;
 				created_at: number;
 			}>();
+		// Old rows (before Milestone 4) are logged as kind
+		// 'command_result' with detail 'command 16: done' — resolve
+		// them to the real command kind and its result, so the
+		// history reads properly for older actions too.
+		const resolved = new Map<number, { kind: string; result: string }>();
+		const cmdIds = (rows.results ?? [])
+			.filter((r) => r.kind === "command_result")
+			.map((r) => Number((r.detail.match(/command (\d+)/) ?? [])[1]))
+			.filter((n) => Number.isFinite(n));
+		if (cmdIds.length > 0) {
+			const placeholders = cmdIds.map(() => "?").join(",");
+			const cmds = await env.DB.prepare(
+				`SELECT id, kind, result FROM device_commands WHERE id IN (${placeholders})`,
+			)
+				.bind(...cmdIds)
+				.all<{ id: number; kind: string; result: string | null }>();
+			for (const c of cmds.results ?? []) {
+				resolved.set(c.id, {
+					kind: c.kind,
+					result: c.result ?? "",
+				});
+			}
+		}
 		const now = Date.now();
 		const actions = (rows.results ?? []).map((row) => {
 			const ageSeconds = Math.max(0, Math.round((now - row.created_at) / 1000));
@@ -476,10 +499,20 @@ export async function getActionHistory(env: Env): Promise<string> {
 						: ageSeconds < 86400
 							? `${Math.round(ageSeconds / 3600)} hours ago`
 							: `${Math.round(ageSeconds / 86400)} days ago`;
+			let kind = row.kind;
+			let detail = row.detail;
+			if (kind === "command_result") {
+				const id = Number((row.detail.match(/command (\d+)/) ?? [])[1]);
+				const cmd = resolved.get(id);
+				if (cmd) {
+					kind = cmd.kind;
+					detail = cmd.result || row.detail;
+				}
+			}
 			return {
 				when,
-				kind: row.kind,
-				detail: row.detail,
+				kind,
+				detail,
 				allowed: row.approved === 1,
 			};
 		});
