@@ -179,24 +179,32 @@ let dragging = null;
 function worldPerPixel(){
   return (2 * cam.position.z * Math.tan((cam.fov/2) * Math.PI/180)) / window.innerHeight;
 }
-holoCanvas.addEventListener('pointerdown', e => {
+// Listen for both pointer and mouse events: real browsers fire both
+// for a mouse drag, touch fires pointer events, and scripted drags
+// may only produce mouse events.
+function onDragStart(e){
   dragging = {sx: e.clientX, sy: e.clientY, ox: drag.x, oy: drag.y};
   holoCanvas.classList.add('dragging');
-  try { holoCanvas.setPointerCapture(e.pointerId); } catch (e){}
-});
-holoCanvas.addEventListener('pointermove', e => {
+  try { if (e.pointerId !== undefined) holoCanvas.setPointerCapture(e.pointerId); } catch (err){}
+}
+function onDragMove(e){
   if (!dragging) return;
   const s = worldPerPixel();
   drag.x = Math.max(-2.2, Math.min(2.2, dragging.ox + (e.clientX - dragging.sx) * s));
   drag.y = Math.max(-1.8, Math.min(1.8, dragging.oy - (e.clientY - dragging.sy) * s));
-});
+}
 function endDrag(){
   if (!dragging) return;
   dragging = null;
   holoCanvas.classList.remove('dragging');
   try { localStorage.setItem('vesper_disc_pos', JSON.stringify(drag)); } catch (e){}
 }
+holoCanvas.addEventListener('pointerdown', onDragStart);
+holoCanvas.addEventListener('mousedown', onDragStart);
+holoCanvas.addEventListener('pointermove', onDragMove);
+holoCanvas.addEventListener('mousemove', onDragMove);
 holoCanvas.addEventListener('pointerup', endDrag);
+holoCanvas.addEventListener('mouseup', endDrag);
 holoCanvas.addEventListener('pointercancel', endDrag);
 
 let thinking = false, speed = 1, pulse = 0;
@@ -209,6 +217,7 @@ function frame(now){
   pulse += ((thinking ? 1 : 0) - pulse)*.05;
   const m = motion, beat = .5 + .5*Math.sin(t*6);
 
+  disc.position.x = (cam.aspect > 1.1 ? 1.0 : 0) + drag.x; // shift right on wide screens, plus your drag
   disc.position.y = .45 + Math.sin(t*.6)*.06*m + drag.y; // sits above the message box, plus your drag
   disc.rotation.y = Math.sin(t*.25)*.12*m; // gentle sway, tilt stays
   rings.forEach(r => { r.m.rotation.z += dt*r.spd*speed*m; });
@@ -331,7 +340,7 @@ if (SR){
     if (said){ inp.value = said; form.requestSubmit(); }
   });
   recog.addEventListener('end', () => { listening = false; micBtn.classList.remove('listening'); });
-  recog.addEventListener('error', () => { listening = false; micBtn.classList.remove('listening'); });
+  recog.addEventListener('error', ev => { listening = false; micBtn.classList.remove('listening'); micBtn.title = 'Microphone error: ' + (ev.error || 'unavailable'); });
   micBtn.addEventListener('click', () => {
     if (listening){ recog.stop(); return; }
     if ('speechSynthesis' in window) speechSynthesis.cancel();
