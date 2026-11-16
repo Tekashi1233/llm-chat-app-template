@@ -26,6 +26,9 @@ export const TOOL_NAMES = [
 	"get_device_status",
 	"open_app",
 	"search_files",
+	"create_file",
+	"edit_file",
+	"read_file",
 ] as const;
 
 /**
@@ -178,6 +181,77 @@ export const TOOL_DEFINITIONS: FunctionTool[] = [
 			},
 		},
 	},
+	{
+		type: "function",
+		function: {
+			name: "create_file",
+			description:
+				"Create a new text file on the user's paired Windows laptop, through the companion app. Use it when the user asks to create, write, or save a file, e.g. 'make a file on my Desktop called notes.txt with my shopping list'. The app only writes inside folders the user has allowlisted, and it shows the user a confirmation popup on the laptop screen — nothing is written until they click Allow. It refuses if the file already exists.",
+			parameters: {
+				type: "object",
+				properties: {
+					path: {
+						type: "string",
+						description: "Where to create the file: a friendly folder plus file name like 'Desktop/notes.txt', or a full path like 'C:\\Users\\name\\Desktop\\notes.txt'.",
+					},
+					content: {
+						type: "string",
+						description: "The full text to put in the file.",
+					},
+				},
+				required: ["path", "content"],
+			},
+		},
+	},
+	{
+		type: "function",
+		function: {
+			name: "edit_file",
+			description:
+				"Change a text file on the user's paired Windows laptop, through the companion app. Use it when the user asks to edit, update, or add to a file, e.g. 'add milk to my shopping list' or 'change the title in notes.txt'. The app only writes inside folders the user has allowlisted, and it shows the user a confirmation popup on the laptop screen — nothing is changed until they click Allow. Mode 'append' adds the new text at the end of the file; mode 'replace' swaps the given old text for the new text.",
+			parameters: {
+				type: "object",
+				properties: {
+					path: {
+						type: "string",
+						description: "File to edit: a friendly folder plus file name like 'Desktop/notes.txt', or a full path.",
+					},
+					mode: {
+						type: "string",
+						enum: ["append", "replace"],
+						description: "append adds the new text at the end; replace swaps old_text for new_text.",
+					},
+					old_text: {
+						type: "string",
+						description: "For replace mode: the exact text in the file to swap out.",
+					},
+					new_text: {
+						type: "string",
+						description: "The new text to add or swap in.",
+					},
+				},
+				required: ["path", "mode", "new_text"],
+			},
+		},
+	},
+	{
+		type: "function",
+		function: {
+			name: "read_file",
+			description:
+				"Read a text file on the user's paired Windows laptop, through the companion app. Use it when the user asks what is in a file, or when you need to see a file's contents before editing it. Read-only: it never changes anything, so no confirmation popup is shown. The app only reads inside folders the user has allowlisted.",
+			parameters: {
+				type: "object",
+				properties: {
+					path: {
+						type: "string",
+						description: "File to read: a friendly folder plus file name like 'Desktop/notes.txt', or a full path.",
+					},
+				},
+				required: ["path"],
+			},
+		},
+	},
 ];
 
 /**
@@ -216,6 +290,9 @@ export async function executeTool(
 				return await getDeviceStatus(env);
 			case "open_app":
 			case "search_files":
+			case "create_file":
+			case "edit_file":
+			case "read_file":
 				if (!env) {
 					return JSON.stringify({
 						error: "Device commands are unavailable.",

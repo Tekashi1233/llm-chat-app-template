@@ -482,6 +482,16 @@ export async function runDeviceCommand(
 				error: `The laptop '${device.name ?? device.id}' was last seen ${ageSeconds} seconds ago. It looks off, or the companion app is not running. Ask the user to open the companion app on the laptop and try again.`,
 			});
 		}
+		const allowedActions = [
+			"open_app",
+			"search_files",
+			"create_file",
+			"edit_file",
+			"read_file",
+		];
+		if (!allowedActions.includes(action)) {
+			return JSON.stringify({ error: `Unknown action: ${action}.` });
+		}
 		const payload: Record<string, unknown> = { action };
 		if (action === "open_app") {
 			const app = String(args.app ?? "").trim();
@@ -489,7 +499,7 @@ export async function runDeviceCommand(
 				return JSON.stringify({ error: "No app name given." });
 			}
 			payload.app = app;
-		} else {
+		} else if (action === "search_files") {
 			const folder = String(args.folder ?? "").trim();
 			const query = String(args.query ?? "").trim();
 			if (!folder || !query) {
@@ -499,6 +509,55 @@ export async function runDeviceCommand(
 			}
 			payload.folder = folder;
 			payload.query = query;
+		} else if (action === "create_file") {
+			const path = String(args.path ?? "").trim();
+			const content = String(args.content ?? "");
+			if (!path) {
+				return JSON.stringify({ error: "No file path given." });
+			}
+			if (content.length > 20000) {
+				return JSON.stringify({
+					error: "That file is too long to write in one go (over 20,000 characters). Ask for a shorter file, or split it into parts.",
+				});
+			}
+			payload.path = path;
+			payload.content = content;
+		} else if (action === "edit_file") {
+			const path = String(args.path ?? "").trim();
+			const mode = String(args.mode ?? "append").trim();
+			const oldText = String(args.old_text ?? "");
+			const newText = String(args.new_text ?? "");
+			if (!path || !newText) {
+				return JSON.stringify({
+					error: "An edit needs a file path and the new text.",
+				});
+			}
+			if (mode !== "replace" && mode !== "append") {
+				return JSON.stringify({
+					error: "An edit is either replace or append.",
+				});
+			}
+			if (mode === "replace" && !oldText) {
+				return JSON.stringify({
+					error: "A replace edit needs the text to replace.",
+				});
+			}
+			if (newText.length > 20000) {
+				return JSON.stringify({
+					error: "That text is too long to write in one go (over 20,000 characters). Ask for a shorter edit, or split it into parts.",
+				});
+			}
+			payload.path = path;
+			payload.mode = mode;
+			payload.old_text = oldText;
+			payload.new_text = newText;
+		} else {
+			// read_file
+			const path = String(args.path ?? "").trim();
+			if (!path) {
+				return JSON.stringify({ error: "No file path given." });
+			}
+			payload.path = path;
 		}
 		const now = Date.now();
 		const inserted = await env.DB.prepare(
@@ -531,12 +590,15 @@ export async function runDeviceCommand(
 				});
 			}
 			if (Date.now() >= deadline) {
+				const isWrite =
+					action === "create_file" || action === "edit_file";
 				return JSON.stringify({
 					action,
 					ok: false,
 					waiting: true,
-					message:
-						"The command was sent to the laptop, but it has not answered yet. Tell the user to check the companion app is running and ask again in a moment.",
+					message: isWrite
+						? "The command was sent to the laptop and a confirmation popup is waiting on its screen. Tell the user to click Allow on the popup, then ask me again and I will check whether it went through."
+						: "The command was sent to the laptop, but it has not answered yet. Tell the user to check the companion app is running and ask again in a moment.",
 				});
 			}
 			await new Promise((resolve) => setTimeout(resolve, 2000));
