@@ -456,6 +456,7 @@ export async function runDeviceCommand(
 	action: string,
 	args: Record<string, unknown>,
 ): Promise<string> {
+	try {
 		if (!env.DB) {
 			return JSON.stringify({ error: "Device memory is unavailable." });
 		}
