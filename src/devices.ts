@@ -677,13 +677,28 @@ export async function runDeviceCommand(
 			payload.arg = arg;
 		}
 		const now = Date.now();
-		const inserted = await env.DB.prepare(
-			"INSERT INTO device_commands (device_id, kind, payload, status, created_at) VALUES (?1, ?2, ?3, 'pending', ?4) RETURNING id",
+		// If the same command is already queued or waiting for this
+		// device (the user asked twice while the first run was still
+		// going), wait on that one instead of queueing a duplicate.
+		const payloadJson = JSON.stringify(payload);
+		const existing = await env.DB.prepare(
+			"SELECT id FROM device_commands WHERE device_id = ?1 AND kind = ?2 AND payload = ?3 AND status IN ('pending', 'delivered') ORDER BY id DESC LIMIT 1",
 		)
-			.bind(device.id, action, JSON.stringify(payload), now)
+			.bind(device.id, action, payloadJson)
 			.first<{ id: number }>();
-		if (!inserted) {
-			return JSON.stringify({ error: "Could not queue the command." });
+		let commandId: number;
+		if (existing) {
+			commandId = existing.id;
+		} else {
+			const inserted = await env.DB.prepare(
+				"INSERT INTO device_commands (device_id, kind, payload, status, created_at) VALUES (?1, ?2, ?3, 'pending', ?4) RETURNING id",
+			)
+				.bind(device.id, action, payloadJson, now)
+				.first<{ id: number }>();
+			if (!inserted) {
+				return JSON.stringify({ error: "Could not queue the command." });
+			}
+			commandId = inserted.id;
 		}
 		// Wait for the app to run it and report back.
 		const deadline = Date.now() + 12_000;
@@ -691,7 +706,7 @@ export async function runDeviceCommand(
 			const row = await env.DB.prepare(
 				"SELECT status, result FROM device_commands WHERE id = ?1",
 			)
-				.bind(inserted.id)
+				.bind(commandId)
 				.first<{ status: string; result: string | null }>();
 			if (row && (row.status === "done" || row.status === "failed")) {
 				let parsed: unknown = row.result ?? "";
