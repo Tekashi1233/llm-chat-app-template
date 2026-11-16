@@ -13,6 +13,12 @@ import { Env, ChatMessage } from "./types";
 // https://developers.cloudflare.com/workers-ai/models/
 const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
+// Reasoning effort for GPT-OSS-20B: "low" | "medium" | "high".
+// "medium" is Cloudflare's default: a balance between answer quality
+// and speed/cost. "low" answers faster with fewer reasoning tokens;
+// "high" reasons longer and costs more. Reasoning cannot be disabled.
+const REASONING_EFFORT = "medium" as const;
+
 // Default system prompt
 const SYSTEM_PROMPT = `
 You are VESPER, a highly capable personal AI assistant.
@@ -36,6 +42,9 @@ Behaviour:
 Identity:
 - Your name is VESPER.
 - You are the user's personal assistant.
+- You run on OpenAI's GPT-OSS-20B model, served through Cloudflare
+  Workers AI. If someone asks what model you are, answer honestly:
+  GPT-OSS-20B. Never claim to be GPT-4, ChatGPT, or any other model.
 `;
 
 export default {
@@ -66,6 +75,33 @@ export default {
 		}
 
 		// API Routes
+		if (url.pathname === "/api/model-info") {
+			// Diagnostic endpoint: reports the server-side model
+			// configuration. No secrets or credentials are exposed.
+			if (request.method === "GET") {
+				return new Response(
+					JSON.stringify({
+						assistant: "VESPER",
+						provider: "Cloudflare Workers AI",
+						configured_model: MODEL_ID,
+						reasoning_effort: REASONING_EFFORT,
+						streaming: true,
+						memory: env.DB ? "d1" : "disabled",
+						status: "configured",
+					}),
+					{
+						headers: {
+							"content-type": "application/json",
+							"Access-Control-Allow-Origin": "*",
+						},
+					},
+				);
+			}
+
+			// Method not allowed for other request types
+			return new Response("Method not allowed", { status: 405 });
+		}
+
 		if (url.pathname === "/api/chat") {
 			// Handle POST requests for chat
 			if (request.method === "POST") {
@@ -108,11 +144,16 @@ async function handleChatRequest(
 		modelMessages.push(...history);
 		modelMessages.push(...messages);
 
+		// Typed by env.AI.run below against this model's own input
+		// shape (ChatCompletionsMessagesInput), which is the type that
+		// carries reasoning_effort; the generic AiTextGenerationInput
+		// does not include it.
 		const inputs = {
 			messages: modelMessages,
 			max_tokens: 1024,
+			reasoning_effort: REASONING_EFFORT,
 			stream: true,
-		} satisfies AiTextGenerationInput & { stream: true };
+		};
 
 		const stream = await env.AI.run<typeof MODEL_ID>(MODEL_ID, inputs, {
 			// Uncomment to use AI Gateway
