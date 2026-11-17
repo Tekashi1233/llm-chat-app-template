@@ -5,8 +5,7 @@ using Athena.Core;
 namespace Athena;
 
 /// <summary>
-/// N5 M2 sign-in: the password login screen, replacing the old
-/// site-key paste. Three modes, decided on load from
+/// N5 M2 sign-in: the password login screen. Three modes, decided on load from
 /// GET /api/auth/status:
 ///   Login — an owner password already exists; password + sign in
 ///     (POST /api/auth/login). The returned token is stored
@@ -14,10 +13,12 @@ namespace Athena;
 ///   Setup — no owner exists yet (setup_required); password +
 ///     confirm + a one-time site-key field (POST /api/auth/setup
 ///     with the key as its auth header). The key is used for that
-///     one call only and is never stored.
-///   LegacyKey — the auth endpoints are not deployed yet (the status
-///     call answers 404), so the old site-key paste is offered as a
-///     grace-period fallback until the Worker M2.1 deploy lands.
+///     one call only and is never stored. DORMANT: the owner does not
+///     want a password (2026-11-18), so no-owner now opens LegacyKey.
+///   LegacyKey — the site-key flow. Used when the auth endpoints are
+///     not deployed yet (the status call answers 404) AND when no
+///     owner exists (setup_required): no password, just the site key,
+///     offered as the grace-period fallback.
 /// The caller reads the result back with SecureStore.TryLoadToken()
 /// (Login/Setup) or SecureStore.TryLoadKey() (LegacyKey).
 /// </summary>
@@ -49,7 +50,8 @@ public partial class SetupWindow : Window
                 SetMode(SetupMode.LegacyKey);
                 return;
             }
-            SetMode(status.SetupRequired ? SetupMode.Setup : SetupMode.Login);
+            // No owner yet: no password is wanted, so use the site key.
+            SetMode(status.SetupRequired ? SetupMode.LegacyKey : SetupMode.Login);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
@@ -81,11 +83,10 @@ public partial class SetupWindow : Window
             case SetupMode.LegacyKey:
                 Title = "Set up ATHENA";
                 HeadingText.Text = "Your site key";
-                IntroText.Text = "Password sign-in isn't on the server yet, so set up with " +
-                    "the site key for now (the VESPER_KEY value in vesper-cloud.html). " +
+                IntroText.Text = "No password is set up, so sign in with " +
+                    "the site key (the ATHENA_KEY value in vesper-cloud.html). " +
                     "It is checked once, then stored encrypted with Windows DPAPI on " +
-                    "this computer only. Once password sign-in is live, the app will " +
-                    "swap this key for a session token automatically.";
+                    "this computer only.";
                 ConfirmLabel.Visibility = Visibility.Collapsed;
                 ConfirmBox.Visibility = Visibility.Collapsed;
                 KeyLabel.Visibility = Visibility.Visible;
