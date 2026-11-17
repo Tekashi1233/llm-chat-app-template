@@ -6,7 +6,7 @@
  * conversation history (from D1), and tool results (from its own
  * tool execution). A caller has no legitimate need to send a
  * system, assistant or tool message, and accepting one would let
- * it replace VESPER's instructions, fake an assistant reply, or
+ * it replace ATHENA's instructions, fake an assistant reply, or
  * forge a tool result.
  *
  * Every function here is pure and exported for testing.

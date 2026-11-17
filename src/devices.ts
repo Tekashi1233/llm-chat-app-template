@@ -1,5 +1,5 @@
 /**
- * VESPER Windows Companion — device endpoints (Next Gen, Milestone 1).
+ * ATHENA Windows Companion — device endpoints (Next Gen, Milestone 1).
  *
  * The companion app on the user's Windows laptop talks to these
  * endpoints over HTTPS. The laptop is behind a home router, so
@@ -223,12 +223,12 @@ async function handlePair(request: Request, env: Env): Promise<Response> {
 		ok: true,
 		status: "pending",
 		message:
-			"Device registered. Give the 6-digit pairing code to VESPER to approve it.",
+			"Device registered. Give the 6-digit pairing code to ATHENA to approve it.",
 	});
 }
 
 /**
- * Approve a pending device. The owner gives VESPER the 6-digit
+ * Approve a pending device. The owner gives ATHENA the 6-digit
  * code shown by the app; this finds the pending device with that
  * code (most recent first) and marks it 'paired'. The code is
  * cleared so it cannot be used again.
@@ -437,7 +437,7 @@ async function handleRevoke(request: Request, env: Env): Promise<Response> {
 			return JSON.stringify({
 				online: false,
 				reason:
-					"No laptop is paired with VESPER yet. Pair the Windows Companion app first.",
+					"No laptop is paired with ATHENA yet. Pair the Windows Companion app first.",
 			});
 		}
 		const now = Date.now();
@@ -476,7 +476,7 @@ async function handleRevoke(request: Request, env: Env): Promise<Response> {
 }
 
 /**
- * What VESPER has done on the paired laptop lately, newest
+ * What ATHENA has done on the paired laptop lately, newest
  * first. Reads the device_actions log the companion app writes
  * every time a command finishes (or is refused). No queue, no
  * wait — a direct read, so the user can ask "what did you do
@@ -491,7 +491,7 @@ export async function getActionHistory(env: Env): Promise<string> {
 		if (!device) {
 			return JSON.stringify({
 				error:
-					"No laptop is paired with VESPER yet. Pair the Windows Companion app first.",
+					"No laptop is paired with ATHENA yet. Pair the Windows Companion app first.",
 			});
 		}
 		const rows = await env.DB.prepare(
@@ -606,7 +606,7 @@ export async function runDeviceCommand(
 		if (!device) {
 			return JSON.stringify({
 				error:
-					"No laptop is paired with VESPER yet. Pair the Windows Companion app first.",
+					"No laptop is paired with ATHENA yet. Pair the Windows Companion app first.",
 			});
 		}
 		// Stale check: a laptop that has not been heard from in two

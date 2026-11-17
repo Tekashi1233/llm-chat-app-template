@@ -1,5 +1,5 @@
 /**
- * VESPER P2 — Advanced Memory (Milestone 1).
+ * ATHENA P2 — Advanced Memory (Milestone 1).
  *
  * Long-term memory: durable facts, preferences, project facts and
  * ongoing plans, stored per browser conversation and recalled into
@@ -19,8 +19,8 @@
  *   ongoing plans. Never casual chat, one-off questions,
  *   credentials or sensitive personal information.
  * - Every memory records WHEN it was stored and WHETHER the user
- *   said it directly (source "user") or VESPER inferred it
- *   (source "inferred"), so VESPER can explain what it remembers
+ *   said it directly (source "user") or ATHENA inferred it
+ *   (source "inferred"), so ATHENA can explain what it remembers
  *   and why.
  *
  * Every function here is fail-open: on any D1 error it returns an
@@ -73,7 +73,7 @@ const SECRET_PATTERNS: RegExp[] = [
 	/\b(password|passwd|pwd|api[-_ ]?key|apikey|secret|auth[-_ ]?token|access[-_ ]?token|bearer)\b(\s*(is|:|=)\s*)([^\s,;]+)/gi,
 	// Known provider key prefixes.
 	/\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})\b/g,
-	// A 64-hex string (the shape of a VESPER device secret).
+	// A 64-hex string (the shape of a ATHENA device secret).
 	/\b[0-9a-f]{64}\b/g,
 	// Long mixed-case-and-digit tokens (32+ chars, e.g. pasted API keys).
 	// Requires both upper/lower case and a digit, so ordinary long
@@ -215,7 +215,7 @@ function toMemory(row: MemoryRow, conversationId: string): Memory {
  * else in the request — system, assistant, or tool messages — is
  * untrusted input and is dropped, never merged: the canonical
  * system prompt always wins, and no external caller can replace
- * or override VESPER's core instructions, fake an assistant reply,
+ * or override ATHENA's core instructions, fake an assistant reply,
  * or forge a tool result. The server supplies the system prompt,
  * the history (from D1), and tool results; the API contract is
  * "send user messages". (The live frontend only ever sends a user
@@ -733,7 +733,7 @@ export async function verifyReplacement(
  * Formats recalled memories for the system prompt, with the
  * transparency the user asked for: what it is, which project it
  * belongs to, when it was recorded, and whether the user said it
- * directly or VESPER inferred it. Returns "" when there is nothing.
+ * directly or ATHENA inferred it. Returns "" when there is nothing.
  *
  * The facts are kept exactly as recorded. The block also carries an
  * explicit instruction that memories are untrusted data, not

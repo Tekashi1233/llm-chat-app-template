@@ -1,5 +1,5 @@
 /**
- * VESPER tools (Phase 5).
+ * ATHENA tools (Phase 5).
  *
  * Server-side tools the model can call. All of them are free and need
  * no API key:
@@ -283,7 +283,7 @@ export const TOOL_DEFINITIONS: FunctionTool[] = [
 		function: {
 			name: "get_action_history",
 			description:
-				"What VESPER has done on the user's paired Windows laptop lately, newest first: apps opened, files created or changed, commands run, and anything refused. Use it when the user asks what you did, what happened on their laptop, or for a recap of recent actions.",
+				"What ATHENA has done on the user's paired Windows laptop lately, newest first: apps opened, files created or changed, commands run, and anything refused. Use it when the user asks what you did, what happened on their laptop, or for a recap of recent actions.",
 			parameters: {
 				type: "object",
 				properties: {},
@@ -510,7 +510,7 @@ async function getWeather(
 // Web research (Wikipedia, free, no key)
 // ---------------------------------------------------------------------------
 
-const WIKI_UA = { "User-Agent": "VESPER/1.0 (https://rankforgetool.com)" };
+const WIKI_UA = { "User-Agent": "ATHENA/1.0 (https://rankforgetool.com)" };
 
 async function searchWeb(query: string): Promise<string> {
 	if (!query.trim()) {

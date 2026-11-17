@@ -1,5 +1,5 @@
 /**
- * VESPER Phase 7 — protection: API key auth + rate limiting.
+ * ATHENA Phase 7 — protection: API key auth + rate limiting.
  *
  * The API key lives in D1 (table `settings`, key 'api_key'), NOT in
  * the repo — the repo is public, so a key in wrangler.jsonc or in
