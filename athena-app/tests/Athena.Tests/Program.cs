@@ -507,6 +507,25 @@ else
     Check("redesign: Settings has no Island card",
         !settingsCs.Contains("RequestShowIsland") && !settingsCs.Contains("Island"));
 
+    // Arc reactor identity + transparent chat (structural: the
+    // window itself needs Windows).
+    Check("reactor: Reactor present",
+        shell.Contains("x:Name=\"Reactor\""));
+    Check("reactor: ReactorGlow present",
+        shell.Contains("x:Name=\"ReactorGlow\""));
+    Check("reactor: ReactorCore present",
+        shell.Contains("x:Name=\"ReactorCore\""));
+    Check("reactor: MainWindow flashes on reply",
+        mainCs.Contains("FlashReactor") && mainCs.Contains("ReplyReceived"));
+    Check("reactor: MainWindow sizes the reactor",
+        mainCs.Contains("AnimateReactorSize(260)") && mainCs.Contains("AnimateReactorSize(84)"));
+    Check("chat: bubbles are transparent",
+        chatViewCs.Contains("Background = Brushes.Transparent"));
+    Check("chat: scroll waits for layout",
+        chatViewCs.Contains("Dispatcher.BeginInvoke") && chatViewCs.Contains("ScrollToEnd"));
+    Check("chat: ReplyReceived event raised",
+        chatViewCs.Contains("ReplyReceived?.Invoke()"));
+
     // N4 voice wiring (structural: SAPI itself needs Windows).
     Check("voice: System.Speech referenced",
         csprojText.Contains("<PackageReference Include=\"System.Speech\""));

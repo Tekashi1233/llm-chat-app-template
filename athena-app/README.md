@@ -6,14 +6,20 @@ that used to be VESPER. N1 built the minimal shell; N2 expanded it
 into a Command Centre; N3 added a floating Dynamic Island; **N4
 added native voice**: female British speech output (SAPI, Hazel
 preferred) and microphone input. **The redesign replaces the
-Command Centre and the Island with a minimal black identity**: a
-pure black screen, the ATHENA wordmark in the centre with subtle
-red + blue light, a discreet status line, and a bottom message
-input. The six capability sections (Conversations, Memory Vault,
-Tools, Devices, Activity, Settings) are reachable from the "···"
-menu. The wordmark stays visible during conversations, smaller,
-at the top — click it to return to the idle screen. Companion
-integration and owner auth (N5) come later.
+Command Centre and the Island with a minimal black identity**:
+a pure black screen, ATHENA as an **arc reactor** in the centre
+— steel rings, a segmented coil ring, a glowing blue-white core —
+with subtle red + blue light behind it, a discreet status line,
+and a bottom message input. The reactor lights up bright the
+moment ATHENA replies, pulses gently while she thinks, and rests
+dim when idle. The chat itself is transparent — message bubbles
+and the input bar have no filled background, so replies sit
+straight on the black with only a thin border. The six capability
+sections (Conversations, Memory Vault, Tools, Devices, Activity,
+Settings) are reachable from the "···" menu. The reactor stays
+visible during conversations, smaller, at the top — click it to
+return to the idle screen. Companion integration and owner auth
+(N5) come later.
 
 ## What N1 is (and is not)
 
@@ -115,8 +121,9 @@ the UI launch test belongs on the real laptop.
   user to check — nothing is ever auto-sent, and the mic is
   never on unless tapped. No wake-word, no background
   listening.
-- The wordmark lighting shows only states real events produce;
-  N4 wires Listening/Speaking to real voice events. Working/Approval
+- The reactor lighting shows only states real events produce;
+  N4 wires Listening/Speaking to real voice events, and a live
+  reply flashes the reactor bright. Working/Approval
   still need Companion device activity (N5). All glow changes are
   slow fades (0.8–1.6s) — no flashing.
 - The wordmark and the chat share one AppState, so the menu sections

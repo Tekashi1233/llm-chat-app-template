@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Athena.Core;
 
 namespace Athena.Views;
@@ -24,6 +25,9 @@ public partial class ChatView : UserControl, IRefreshable
 
     /// <summary>Raised whenever a real message bubble is added, so the shell can switch between the idle wordmark and the conversation view.</summary>
     public event Action? MessagesChanged;
+
+    /// <summary>Raised the moment a live reply from ATHENA lands, so the shell can light the reactor up.</summary>
+    public event Action? ReplyReceived;
 
     /// <summary>How many message bubbles are currently shown.</summary>
     public int MessageCount => MessagesPanel.Children.Count;
@@ -192,6 +196,7 @@ public partial class ChatView : UserControl, IRefreshable
                 text, _state.ApiKey, _state.ConversationId);
             AddMessage("ATHENA", reply, isUser: false);
             _state.SetPresenceState(PresenceState.Idle, PresenceSource.Chat, "Idle");
+            ReplyReceived?.Invoke();
             // N4: read the reply aloud only when the user turned voice output on.
             if (_state.VoiceSettings.OutputEnabled)
                 _state.Voice?.Speak(reply);
@@ -232,12 +237,15 @@ public partial class ChatView : UserControl, IRefreshable
     {
         var left = isUser ? 80d : 0d;
         var right = isUser ? 0d : 80d;
+        // Transparent bubbles: the text sits straight on the black
+        // background with only a thin border, so a reply can never
+        // hide inside a dark panel again.
         var bubble = new Border
         {
-            Background = (Brush)(isUser
-                ? FindResource("BrushUserBubble")
-                : FindResource("BrushPanel")),
-            BorderBrush = (Brush)FindResource("BrushGold"),
+            Background = Brushes.Transparent,
+            BorderBrush = isUser
+                ? new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A))
+                : (Brush)FindResource("BrushGold"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(6),
             Padding = new Thickness(12, 8, 12, 8),
@@ -252,7 +260,9 @@ public partial class ChatView : UserControl, IRefreshable
             Text = who,
             FontSize = 11,
             FontWeight = FontWeights.SemiBold,
-            Foreground = (Brush)FindResource("BrushGold"),
+            Foreground = isUser
+                ? (Brush)FindResource("BrushMuted")
+                : (Brush)FindResource("BrushGold"),
             Margin = new Thickness(0, 0, 0, 4),
         });
         stack.Children.Add(new TextBlock
@@ -286,8 +296,14 @@ public partial class ChatView : UserControl, IRefreshable
 
     private void ScrollToBottom()
     {
-        // The ScrollViewer is the parent of MessagesPanel.
-        if (MessagesPanel.Parent is ScrollViewer scroller)
-            scroller.ScrollToEnd();
+        // Scroll AFTER layout: calling ScrollToEnd synchronously
+        // runs before the new bubble is measured, so the view stays
+        // at the top and the newest reply sits out of sight — the
+        // invisible-reply bug. Dispatching to Background priority
+        // runs after the layout pass, so the scroll lands at the end.
+        if (MessagesPanel.Parent is not ScrollViewer scroller) return;
+        Dispatcher.BeginInvoke(
+            () => scroller.ScrollToEnd(),
+            DispatcherPriority.Background);
     }
 }

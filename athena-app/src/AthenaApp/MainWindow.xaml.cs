@@ -12,15 +12,18 @@ using Athena.Views;
 namespace Athena;
 
 /// <summary>
-/// Minimal black identity shell: pure black background, the ATHENA
-/// wordmark in the centre with subtle red + blue light, a discreet
-/// status line, and the single ChatView below. No dashboard, no
-/// sidebar, no floating Island (N3 is cancelled). The six capability
-/// sections (Conversations, Memory Vault, Tools, Devices, Activity,
+/// Minimal black identity shell: pure black background, ATHENA as
+/// an arc reactor in the centre — steel rings, a segmented coil
+/// ring and a glowing blue-white core — with subtle red + blue
+/// light behind it and a discreet status line. The reactor lights
+/// up bright when ATHENA replies, pulses gently while she thinks,
+/// and rests dim when idle. No dashboard, no sidebar, no floating
+/// Island (N3 is cancelled). The six capability sections
+/// (Conversations, Memory Vault, Tools, Devices, Activity,
 /// Settings) live behind the "···" menu as an overlay, reusing the
-/// existing views. The wordmark stays visible during conversations,
+/// existing views. The reactor stays visible during conversations,
 /// smaller, at the top — clicking it returns to the idle screen.
-/// The wordmark lighting follows the presence machine: only states
+/// The reactor lighting follows the presence machine: only states
 /// real events produce ever light up. All glow changes are slow
 /// (0.8–1.6s) fades — no flashing.
 /// First-run key setup, the connection check and the initial data
@@ -45,6 +48,7 @@ public partial class MainWindow : Window
         _chatView = new ChatView(_state, SetStatus);
         ChatArea.Content = _chatView;
         _chatView.MessagesChanged += UpdateLayoutFromMessages;
+        _chatView.ReplyReceived += FlashReactor;
         _state.ConversationChanged += () => UpdateLayoutFromMessages();
         _state.PresenceChanged += ApplyPresence;
         Loaded += async (_, _) => await InitialiseAsync();
@@ -255,7 +259,8 @@ public partial class MainWindow : Window
         _conversing = false;
         WordmarkRow.Height = new GridLength(1, GridUnitType.Star);
         ChatRow.Height = GridLength.Auto;
-        AnimateFontSize(72);
+        AnimateReactorSize(260);
+        AnimateFontSize(28);
         WordmarkText.Cursor = Cursors.Arrow;
         WordmarkText.ToolTip = "ATHENA";
     }
@@ -266,7 +271,8 @@ public partial class MainWindow : Window
         _conversing = true;
         WordmarkRow.Height = GridLength.Auto;
         ChatRow.Height = new GridLength(1, GridUnitType.Star);
-        AnimateFontSize(26);
+        AnimateReactorSize(84);
+        AnimateFontSize(16);
         WordmarkText.Cursor = Cursors.Hand;
         WordmarkText.ToolTip = "Click to return to the idle screen";
     }
@@ -277,6 +283,42 @@ public partial class MainWindow : Window
         _state.NewConversation();
         SetIdleLayout();
         _chatView.FocusInput();
+    }
+
+    private void Reactor_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) =>
+        WordmarkText_MouseLeftButtonDown(sender, e);
+
+    private void AnimateReactorSize(double size)
+    {
+        var ease = new CubicEase { EasingMode = EasingMode.EaseInOut };
+        var duration = TimeSpan.FromSeconds(0.6);
+        Reactor.BeginAnimation(FrameworkElement.WidthProperty,
+            new DoubleAnimation(size, duration) { EasingFunction = ease });
+        Reactor.BeginAnimation(FrameworkElement.HeightProperty,
+            new DoubleAnimation(size, duration) { EasingFunction = ease });
+    }
+
+    /// <summary>
+    /// Reply flash: the reactor lights up bright the moment ATHENA
+    /// answers, then settles back to whatever the presence says.
+    /// A slow ease, not a strobe.
+    /// </summary>
+    public void FlashReactor()
+    {
+        SetReactor(0.95, 1.0, 0.3);
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.0) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            ApplyPresence(_state.PresenceStatus);
+        };
+        timer.Start();
+    }
+
+    private void SetReactor(double glow, double core, double seconds = 0.8)
+    {
+        AnimateOpacity(ReactorGlow, glow, seconds);
+        AnimateOpacity(ReactorCore, core, seconds);
     }
 
     private void AnimateFontSize(double target)
@@ -312,24 +354,29 @@ public partial class MainWindow : Window
             case PresenceState.Idle:
                 AnimateOpacity(BlueGlow, 0.16);
                 AnimateOpacity(RedGlow, 0.16);
+                SetReactor(0.25, 0.55);
                 break;
             case PresenceState.Listening:
                 AnimateOpacity(BlueGlow, 0.45);
                 AnimateOpacity(RedGlow, 0.16);
+                SetReactor(0.60, 0.75);
                 break;
             case PresenceState.Thinking:
                 // Slow cross-fade: blue and red trade prominence
-                // every 1.2s. Gentle, never flashing.
+                // every 1.2s, and the reactor breathes with them.
+                // Gentle, never flashing.
                 _glowSwap = false;
                 StartGlowTimer(TimeSpan.FromSeconds(1.2), () =>
                 {
                     _glowSwap = !_glowSwap;
                     AnimateOpacity(BlueGlow, _glowSwap ? 0.14 : 0.42, 1.2);
                     AnimateOpacity(RedGlow, _glowSwap ? 0.42 : 0.14, 1.2);
+                    SetReactor(_glowSwap ? 0.35 : 0.60, 0.65, 1.2);
                 });
                 break;
             case PresenceState.Speaking:
-                // Slow pulse on the blue glow while speech plays.
+                // Slow pulse on the blue glow while speech plays,
+                // and the reactor pulses with it.
                 // An activity indicator, not a waveform.
                 _glowSwap = false;
                 StartGlowTimer(TimeSpan.FromSeconds(1.6), () =>
@@ -337,20 +384,24 @@ public partial class MainWindow : Window
                     _glowSwap = !_glowSwap;
                     AnimateOpacity(BlueGlow, _glowSwap ? 0.50 : 0.30, 1.6);
                     AnimateOpacity(RedGlow, 0.16, 1.6);
+                    SetReactor(_glowSwap ? 0.85 : 0.50, 0.85, 1.6);
                 });
                 break;
             case PresenceState.Working:
             case PresenceState.Approval:
                 AnimateOpacity(BlueGlow, 0.30);
                 AnimateOpacity(RedGlow, 0.30);
+                SetReactor(0.45, 0.70);
                 break;
             case PresenceState.Offline:
                 AnimateOpacity(BlueGlow, 0.07);
                 AnimateOpacity(RedGlow, 0.07);
+                SetReactor(0.08, 0.15);
                 break;
             case PresenceState.Error:
                 AnimateOpacity(BlueGlow, 0.10);
                 AnimateOpacity(RedGlow, 0.35);
+                SetReactor(0.10, 0.25);
                 break;
         }
     }

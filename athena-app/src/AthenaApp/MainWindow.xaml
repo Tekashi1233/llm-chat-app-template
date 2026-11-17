@@ -38,14 +38,51 @@
       </Ellipse>
 
       <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+        <!-- Arc reactor: ATHENA's identity. Concentric steel rings,
+             a segmented coil ring, and a glowing blue-white core.
+             It lights up bright when ATHENA replies, pulses gently
+             while she thinks, and rests dim when idle. -->
+        <Grid x:Name="Reactor" Width="260" Height="260"
+              HorizontalAlignment="Center"
+              MouseLeftButtonDown="Reactor_MouseLeftButtonDown"
+              ToolTip="Click to return to the idle screen">
+          <Ellipse x:Name="ReactorGlow" Width="420" Height="420"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   Opacity="0.25">
+            <Ellipse.Fill>
+              <RadialGradientBrush>
+                <GradientStop Color="#7FB3FF" Offset="0"/>
+                <GradientStop Color="#2E5AAC" Offset="0.4"/>
+                <GradientStop Color="#002E5AAC" Offset="1"/>
+              </RadialGradientBrush>
+            </Ellipse.Fill>
+          </Ellipse>
+          <Ellipse Stroke="#7A8A99" StrokeThickness="3"/>
+          <Ellipse Margin="14" Stroke="#9FB4C7" StrokeThickness="12"
+                   StrokeDashArray="10 7"/>
+          <Ellipse Margin="38" Stroke="#5A6B7A" StrokeThickness="2"/>
+          <Ellipse x:Name="ReactorCore" Margin="52" Opacity="0.55">
+            <Ellipse.Fill>
+              <RadialGradientBrush>
+                <GradientStop Color="#FFFFFF" Offset="0"/>
+                <GradientStop Color="#BFE0FF" Offset="0.35"/>
+                <GradientStop Color="#2E5AAC" Offset="0.7"/>
+                <GradientStop Color="#002E5AAC" Offset="1"/>
+              </RadialGradientBrush>
+            </Ellipse.Fill>
+          </Ellipse>
+          <Ellipse Width="26" Height="26" Fill="#FFFFFF"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Grid>
         <TextBlock x:Name="WordmarkText" Text="A T H E N A" FontFamily="Georgia"
-                   FontSize="72" FontWeight="Bold"
+                   FontSize="28" FontWeight="Bold"
                    Foreground="#EDEDE8" HorizontalAlignment="Center"
+                   Margin="0,18,0,0"
                    MouseLeftButtonDown="WordmarkText_MouseLeftButtonDown"
                    ToolTip="Click to return to the idle screen"/>
         <TextBlock x:Name="StatusText" Text="Starting…" FontSize="11"
                    Foreground="#8A8A85" HorizontalAlignment="Center"
-                   Margin="0,16,0,0"/>
+                   Margin="0,10,0,0"/>
       </StackPanel>
 
       <!-- Minimal menu, top right. -->

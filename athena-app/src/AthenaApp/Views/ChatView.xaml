@@ -28,7 +28,7 @@
     </StackPanel>
 
     <!-- Input bar -->
-    <Border Grid.Row="2" Background="#000000"
+    <Border Grid.Row="2" Background="Transparent"
             BorderBrush="#2A2A2A" BorderThickness="0,1,0,0"
             Padding="16,12">
       <Grid>
