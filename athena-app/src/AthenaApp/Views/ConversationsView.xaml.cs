@@ -27,15 +27,15 @@ public partial class ConversationsView : UserControl, IRefreshable
         ListPanel.Children.Add(ViewHelpers.MutedText("Loading…"));
         try
         {
-            if (string.IsNullOrWhiteSpace(state.ApiKey))
+            if (!state.HasAuth)
             {
                 ListPanel.Children.Clear();
                 ListPanel.Children.Add(ViewHelpers.MutedText(
-                    "Set your site key first to see conversations."));
+                    "Sign in first to see conversations."));
                 return;
             }
 
-            state.Backup ??= await state.Data.GetBackupAsync(state.ApiKey);
+            state.Backup ??= await state.Data.GetBackupAsync(state.ApiKey, authToken: state.AuthToken);
             _all = state.Backup is null
                 ? new List<ConversationSummary>()
                 : ConversationStore.GroupMessages(state.Backup.Messages);

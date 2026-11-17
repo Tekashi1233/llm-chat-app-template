@@ -41,12 +41,12 @@ public sealed class DataClient : IDisposable
             ?? throw new AthenaApiException(0, "Model info came back empty.");
     }
 
-    /// <summary>GET /api/backup. Site key. Up to 5000 messages.</summary>
+    /// <summary>GET /api/backup. Bearer token when stored, else site key (grace). Up to 5000 messages.</summary>
     public async Task<BackupExport> GetBackupAsync(
-        string apiKey, CancellationToken ct = default)
+        string? apiKey, CancellationToken ct = default, string? authToken = null)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, AthenaApi.BackupPath);
-        req.Headers.Add("X-Vesper-Key", apiKey);
+        AuthHeaders.Apply(req, authToken, apiKey);
         using var res = await _http.SendAsync(req, ct);
         if (!res.IsSuccessStatusCode)
             throw MapError((int)res.StatusCode);
@@ -55,16 +55,16 @@ public sealed class DataClient : IDisposable
     }
 
     /// <summary>
-    /// GET /api/memories?conversation_id=… (site key). Returns null
+    /// GET /api/memories?conversation_id=… (token, else site key). Returns null
     /// when the endpoint is not deployed yet (HTTP 404).
     /// </summary>
     public async Task<MemoryList?> GetMemoriesAsync(
-        string apiKey, string conversationId, CancellationToken ct = default)
+        string? apiKey, string conversationId, CancellationToken ct = default, string? authToken = null)
     {
         var path = $"{AthenaApi.MemoriesPath}" +
             $"?conversation_id={Uri.EscapeDataString(conversationId)}";
         using var req = new HttpRequestMessage(HttpMethod.Get, path);
-        req.Headers.Add("X-Vesper-Key", apiKey);
+        AuthHeaders.Apply(req, authToken, apiKey);
         using var res = await _http.SendAsync(req, ct);
         if ((int)res.StatusCode == 404) return null;
         if (!res.IsSuccessStatusCode)
@@ -73,14 +73,14 @@ public sealed class DataClient : IDisposable
     }
 
     /// <summary>
-    /// GET /api/devices/status (site key). Returns null when the
+    /// GET /api/devices/status (token, else site key). Returns null when the
     /// endpoint is not deployed yet (HTTP 404).
     /// </summary>
     public async Task<DeviceStatus?> GetDeviceStatusAsync(
-        string apiKey, CancellationToken ct = default)
+        string? apiKey, CancellationToken ct = default, string? authToken = null)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, AthenaApi.DeviceStatusPath);
-        req.Headers.Add("X-Vesper-Key", apiKey);
+        AuthHeaders.Apply(req, authToken, apiKey);
         using var res = await _http.SendAsync(req, ct);
         if ((int)res.StatusCode == 404) return null;
         if (!res.IsSuccessStatusCode)
@@ -89,15 +89,15 @@ public sealed class DataClient : IDisposable
     }
 
     /// <summary>
-    /// GET /api/devices/activity?limit=… (site key). Returns null
+    /// GET /api/devices/activity?limit=… (token, else site key). Returns null
     /// when the endpoint is not deployed yet (HTTP 404).
     /// </summary>
     public async Task<DeviceActivityList?> GetDeviceActivityAsync(
-        string apiKey, int limit = 50, CancellationToken ct = default)
+        string? apiKey, int limit = 50, CancellationToken ct = default, string? authToken = null)
     {
         var path = $"{AthenaApi.DeviceActivityPath}?limit={limit}";
         using var req = new HttpRequestMessage(HttpMethod.Get, path);
-        req.Headers.Add("X-Vesper-Key", apiKey);
+        AuthHeaders.Apply(req, authToken, apiKey);
         using var res = await _http.SendAsync(req, ct);
         if ((int)res.StatusCode == 404) return null;
         if (!res.IsSuccessStatusCode)
@@ -108,7 +108,7 @@ public sealed class DataClient : IDisposable
     private static AthenaApiException MapError(int status) => new(status,
         status switch
         {
-            401 => "Not authorised — the site key is missing or wrong.",
+            401 => "Not authorised — sign in again, or the site key is missing or wrong.",
             429 => "Too many requests — wait a minute and try again.",
             _ => $"The service returned HTTP {status}.",
         });

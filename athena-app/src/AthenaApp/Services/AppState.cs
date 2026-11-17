@@ -11,7 +11,13 @@ public sealed class AppState
 {
     public ChatClient Chat { get; } = new();
     public DataClient Data { get; } = new();
+    public AuthClient Auth { get; } = new();
     public string? ApiKey { get; set; }
+    /// <summary>N5 M2 owner session token (DPAPI-encrypted in config.json). Preferred over ApiKey whenever present.</summary>
+    public string? AuthToken { get; set; }
+    /// <summary>True when the app can authenticate at all — token or (grace-period) site key.</summary>
+    public bool HasAuth =>
+        !string.IsNullOrWhiteSpace(AuthToken) || !string.IsNullOrWhiteSpace(ApiKey);
     public string ConversationId { get; set; } = "";
     public ModelInfo? ModelInfo { get; set; }
     public BackupExport? Backup { get; set; }

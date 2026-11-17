@@ -40,7 +40,7 @@
         </Grid.ColumnDefinitions>
         <TextBox x:Name="InputBox" Grid.Column="0" Margin="0,0,12,0"
                  Background="Transparent" BorderThickness="0"
-                 KeyDown="InputBox_KeyDown"/>
+                 KeyDown="InputBox_KeyDown" TextChanged="InputBox_TextChanged"/>
         <Button x:Name="MicButton" Grid.Column="1" Content="Mic"
                 Margin="0,0,8,0" Padding="10,4" IsEnabled="False"
                 Click="MicButton_Click"

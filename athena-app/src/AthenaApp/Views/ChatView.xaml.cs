@@ -23,6 +23,14 @@ public partial class ChatView : UserControl, IRefreshable
     private readonly Action<string, Color> _setStatus;
     private bool _sending;
     private bool _voiceWired;
+    // N5 M2: true only while the input box still holds exactly what
+    // the microphone recognised. Set by the Recognized handler;
+    // cleared by ANY hand edit of the text (TextChanged), so a typed
+    // or edited message is never tagged via_voice. The tag is the
+    // Worker's enforcement for the voice-only "wolf" revoke — a
+    // wrong tag would let typed "wolf" unpair the laptop.
+    private bool _micFilled;
+    private bool _settingMicText;
 
     /// <summary>Raised whenever a real message bubble is added, so the shell can switch between the idle wordmark and the conversation view.</summary>
     public event Action? MessagesChanged;
@@ -61,7 +69,12 @@ public partial class ChatView : UserControl, IRefreshable
             _voiceWired = true;
             voice.Recognized += text =>
             {
+                _settingMicText = true;
                 InputBox.Text = text;
+                _settingMicText = false;
+                // The text came from the mic: tag the next send
+                // via_voice — unless the user edits it first.
+                _micFilled = true;
                 InputBox.CaretIndex = text.Length;
                 FocusInput();
             };
@@ -172,6 +185,18 @@ public partial class ChatView : UserControl, IRefreshable
     }
 
     /// <summary>
+    /// N5 M2: any hand edit of the input clears the mic flag, so a
+    /// message the user typed or edited is never tagged via_voice.
+    /// Programmatic fills from the mic set _settingMicText and are
+    /// not treated as edits.
+    /// </summary>
+    private void InputBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_settingMicText)
+            _micFilled = false;
+    }
+
+    /// <summary>
     /// M1: send a device command from the Devices view. The prompt
     /// must come from DeviceQuickActions; it goes through the normal
     /// chat path, so the model, the Worker and the Companion enforce
@@ -189,11 +214,16 @@ public partial class ChatView : UserControl, IRefreshable
         if (_sending) return;
         text ??= InputBox.Text;
         if (!MessageValidation.IsValidUserMessage(text)) return;
-        if (string.IsNullOrWhiteSpace(_state.ApiKey))
+        if (!_state.HasAuth)
         {
-            AddSystemMessage("Set your site key first (menu (···) → Settings).", isError: true);
+            AddSystemMessage("Sign in first (menu (···) → Settings).", isError: true);
             return;
         }
+        // N5 M2: capture the mic flag now — device commands are
+        // never voice-tagged, and the flag clears once the message
+        // is sent (or the user edits the text first).
+        var viaVoice = _micFilled && !deviceCommand;
+        _micFilled = false;
 
         _sending = true;
         SendButton.IsEnabled = false;
@@ -214,7 +244,7 @@ public partial class ChatView : UserControl, IRefreshable
         try
         {
             var reply = await _state.Chat.SendMessageAsync(
-                text, _state.ApiKey, _state.ConversationId);
+                text, _state.ApiKey, _state.ConversationId, _state.AuthToken, viaVoice);
             AddMessage("ATHENA", reply, isUser: false);
             // M1: when the reply says a confirmation popup is
             // waiting on the laptop screen, the reactor shows

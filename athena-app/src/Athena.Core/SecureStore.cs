@@ -8,13 +8,19 @@ namespace Athena.Core;
 
 /// <summary>
 /// Local settings for the ATHENA app, kept in %APPDATA%\Athena.
-/// The site key is stored encrypted with Windows DPAPI (current-user
-/// scope) via CryptProtectData — it is NEVER written in plain text,
-/// NEVER put in source code, and NEVER embedded in the executable.
+/// The site key and the owner session token are stored encrypted
+/// with Windows DPAPI (current-user scope) via CryptProtectData —
+/// they are NEVER written in plain text, NEVER put in source code,
+/// and NEVER embedded in the executable.
 /// DPAPI is Windows-only: on any other OS these methods throw a clear
 /// PlatformNotSupportedException instead of silently falling back to
 /// an insecure store. The conversation id is not a secret and is
 /// stored in plain text next to it.
+///
+/// N5 M2: the token is the primary credential (password login).
+/// The site key is kept only for the grace period / migration:
+/// on startup a stored key is exchanged once for a token and then
+/// deleted from the config (see AuthValidation.ShouldMigrate).
 /// </summary>
 public static class SecureStore
 {
@@ -25,7 +31,8 @@ public static class SecureStore
 
     private static string ConfigPath => Path.Combine(ConfigDir, "config.json");
 
-    private sealed record AppConfig(string? ProtectedKey, string ConversationId);
+    private sealed record AppConfig(
+        string? ProtectedKey, string ConversationId, string? ProtectedToken = null);
 
     public static string GetOrCreateConversationId()
     {
@@ -34,7 +41,7 @@ public static class SecureStore
             return cfg.ConversationId;
 
         var id = Guid.NewGuid().ToString();
-        WriteConfig(new AppConfig(cfg?.ProtectedKey, id));
+        WriteConfig(new AppConfig(cfg?.ProtectedKey, id, cfg?.ProtectedToken));
         return id;
     }
 
@@ -66,7 +73,62 @@ public static class SecureStore
             : Guid.NewGuid().ToString();
         WriteConfig(new AppConfig(
             Convert.ToBase64String(Protect(key)),
-            id));
+            id, cfg?.ProtectedToken));
+    }
+
+    /// <summary>
+    /// Deletes the stored site key (M2 migration: after a successful
+    /// exchange the key must not linger in the config). The token
+    /// and conversation id are kept.
+    /// </summary>
+    public static void DeleteKey()
+    {
+        var cfg = ReadConfig();
+        if (cfg is null) return;
+        var id = Guid.TryParse(cfg.ConversationId, out _)
+            ? cfg.ConversationId
+            : Guid.NewGuid().ToString();
+        WriteConfig(new AppConfig(null, id, cfg.ProtectedToken));
+    }
+
+    /// <summary>Returns the stored owner session token, or null when not signed in.</summary>
+    public static string? TryLoadToken()
+    {
+        try
+        {
+            var cfg = ReadConfig();
+            if (cfg?.ProtectedToken is null) return null;
+            return Unprotect(Convert.FromBase64String(cfg.ProtectedToken));
+        }
+        catch (Exception ex) when (
+            ex is FormatException or CryptographicException or DllNotFoundException
+            or EntryPointNotFoundException or PlatformNotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    public static void SaveToken(string token)
+    {
+        var cfg = ReadConfig();
+        var id = cfg is not null && Guid.TryParse(cfg.ConversationId, out _)
+            ? cfg.ConversationId
+            : Guid.NewGuid().ToString();
+        WriteConfig(new AppConfig(
+            cfg?.ProtectedKey,
+            id,
+            Convert.ToBase64String(Protect(token))));
+    }
+
+    /// <summary>Deletes the stored token (sign out). The conversation id is kept.</summary>
+    public static void DeleteToken()
+    {
+        var cfg = ReadConfig();
+        if (cfg is null) return;
+        var id = Guid.TryParse(cfg.ConversationId, out _)
+            ? cfg.ConversationId
+            : Guid.NewGuid().ToString();
+        WriteConfig(new AppConfig(cfg.ProtectedKey, id, null));
     }
 
     private static AppConfig? ReadConfig()

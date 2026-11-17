@@ -29,18 +29,34 @@ public partial class SettingsView : UserControl, IRefreshable
         var connCard = ViewHelpers.Card("Connection", out var connBody);
         connBody.Children.Add(ViewHelpers.BodyText("Backend: " + AthenaApi.WorkerBase));
         connBody.Children.Add(ViewHelpers.BodyText(
-            string.IsNullOrWhiteSpace(state.ApiKey)
-                ? "Key stored: No key stored"
-                : "Key stored: Key stored (encrypted)"));
+            !string.IsNullOrWhiteSpace(state.AuthToken)
+                ? "Signed in: Yes — session token stored (encrypted)"
+                : !string.IsNullOrWhiteSpace(state.ApiKey)
+                ? "Signed in: using the site key (grace period — it will be swapped for a session token)"
+                : "Signed in: No"));
         var changeKeyButton = new Button
         {
-            Content = "Change key",
+            Content = string.IsNullOrWhiteSpace(state.AuthToken) && string.IsNullOrWhiteSpace(state.ApiKey)
+                ? "Sign in"
+                : "Sign in again",
             HorizontalAlignment = HorizontalAlignment.Left,
             Padding = new Thickness(10, 4, 10, 4),
             Margin = new Thickness(0, 6, 0, 0),
         };
         changeKeyButton.Click += ChangeKeyButton_Click;
         connBody.Children.Add(changeKeyButton);
+        if (!string.IsNullOrWhiteSpace(state.AuthToken))
+        {
+            var signOutButton = new Button
+            {
+                Content = "Sign out",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Padding = new Thickness(10, 4, 10, 4),
+                Margin = new Thickness(0, 6, 0, 0),
+            };
+            signOutButton.Click += SignOutButton_Click;
+            connBody.Children.Add(signOutButton);
+        }
         ContentPanel.Children.Add(connCard);
 
         // Model.
@@ -221,13 +237,13 @@ public partial class SettingsView : UserControl, IRefreshable
         var deviceCard = ViewHelpers.Card("Device", out var deviceBody);
         try
         {
-            if (string.IsNullOrWhiteSpace(state.ApiKey))
+            if (!state.HasAuth)
             {
                 deviceBody.Children.Add(ViewHelpers.MutedText("No laptop paired"));
             }
             else
             {
-                var status = await state.Data.GetDeviceStatusAsync(state.ApiKey);
+                var status = await state.Data.GetDeviceStatusAsync(state.ApiKey, authToken: state.AuthToken);
                 if (status is null)
                 {
                     // Endpoint not deployed yet: say so honestly instead
@@ -271,12 +287,31 @@ public partial class SettingsView : UserControl, IRefreshable
 
     private async void ChangeKeyButton_Click(object sender, RoutedEventArgs e)
     {
-        var setup = new SetupWindow(_state.Chat);
+        var setup = new SetupWindow(_state.Chat, _state.Auth);
         if (setup.ShowDialog() == true)
         {
+            _state.AuthToken = SecureStore.TryLoadToken();
             _state.ApiKey = SecureStore.TryLoadKey();
             await _onKeyChanged();
             await RefreshAsync(_state);
         }
+    }
+
+    /// <summary>
+    /// N5 M2 sign out: revoke the session server-side (best effort —
+    /// a failed call never blocks signing out locally), then delete
+    /// the stored token. The conversation history stays on the server.
+    /// </summary>
+    private async void SignOutButton_Click(object sender, RoutedEventArgs e)
+    {
+        var token = _state.AuthToken;
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            try { await _state.Auth.LogoutAsync(token); } catch (Exception) { }
+        }
+        SecureStore.DeleteToken();
+        _state.AuthToken = null;
+        await _onKeyChanged();
+        await RefreshAsync(_state);
     }
 }
