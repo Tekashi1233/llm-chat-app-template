@@ -12,6 +12,8 @@
  * - POST /api/devices/heartbeat (device secret) send CPU/RAM/disk/network status
  * - GET  /api/devices/commands  (device secret) fetch pending commands (empty in M1)
  * - POST /api/devices/result    (device secret) report a command result
+ * - POST /api/devices/revoke    (device secret) unpair the device: status 'revoked',
+ *   pending commands cleared, so the app stops and chat sees no laptop
  *
  * Pair/confirm use the site key and the normal rate limit, because
  * a person (or the website) calls them. The device endpoints use
@@ -132,6 +134,9 @@ export async function handleDevicesRequest(
 		}
 		if (path === "/api/devices/result" && request.method === "POST") {
 			return handleResult(request, env);
+		}
+		if (path === "/api/devices/revoke" && request.method === "POST") {
+			return handleRevoke(request, env);
 		}
 		return json({ error: "Not found" }, 404);
 	} catch (error) {
@@ -370,6 +375,40 @@ async function handleResult(request: Request, env: Env): Promise<Response> {
 			ok ? 1 : 0,
 			now,
 		)
+		.run();
+	return json({ ok: true });
+}
+
+/**
+ * Unpairs the device that calls it (device secret auth). The
+ * device row becomes 'revoked' — checkDeviceAuth then answers
+ * 403 to any later heartbeat, command poll or result, so the app
+ * stops entirely — and any commands still queued for it are
+ * cleared, so nothing runs after the revoke. The app wipes its
+ * own local identity after calling this and shows the pairing
+ * screen again on next launch, so re-pairing gives a fresh
+ * device id and code.
+ */
+async function handleRevoke(request: Request, env: Env): Promise<Response> {
+	const auth = await checkDeviceAuth(request, env);
+	if (!auth.ok || !auth.device) {
+		return json({ error: auth.reason ?? "Unauthorized" }, auth.status ?? 401);
+	}
+	const now = Date.now();
+	await env.DB.prepare(
+		"UPDATE devices SET status = 'revoked' WHERE id = ?1",
+	)
+		.bind(auth.device.id)
+		.run();
+	await env.DB.prepare(
+		"DELETE FROM device_commands WHERE device_id = ?1 AND status IN ('pending', 'delivered')",
+	)
+		.bind(auth.device.id)
+		.run();
+	await env.DB.prepare(
+		"INSERT INTO device_actions (device_id, kind, detail, approved, created_at) VALUES (?1, 'revoke', 'Pairing revoked from the companion app', 1, ?2)",
+	)
+		.bind(auth.device.id, now)
 		.run();
 	return json({ ok: true });
 }
