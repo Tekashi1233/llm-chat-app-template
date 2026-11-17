@@ -1,16 +1,14 @@
 <Window x:Class="Athena.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="ATHENA" Height="640" Width="860"
-        MinHeight="480" MinWidth="640"
+        Title="ATHENA" Height="700" Width="1100"
+        MinHeight="560" MinWidth="900"
         Background="{StaticResource BrushBackground}"
         Icon="icon.png">
   <Grid>
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
 
     <!-- Header: wordmark + connection status -->
@@ -35,32 +33,76 @@
       </DockPanel>
     </Border>
 
-    <!-- Chat feed -->
-    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
-                  Padding="16,8">
-      <StackPanel x:Name="MessagesPanel"/>
-    </ScrollViewer>
+    <!-- Main area: sidebar + content -->
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="200"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
 
-    <!-- Thinking indicator -->
-    <TextBlock Grid.Row="2" x:Name="ThinkingText" Text="Athena is thinking…"
-               FontSize="13" FontStyle="Italic"
-               Foreground="{StaticResource BrushMuted}"
-               Margin="16,0,16,8" Visibility="Collapsed"/>
+      <Border Grid.Column="0" Background="{StaticResource BrushPanel}"
+              BorderBrush="{StaticResource BrushGold}" BorderThickness="0,0,1,0">
+        <StackPanel x:Name="NavPanel" Margin="0,8,0,8">
+          <Button Tag="Dashboard" Content="Dashboard" Click="NavButton_Click"
+                  Background="Transparent"
+                  Foreground="{StaticResource BrushMuted}"
+                  FontSize="14" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  Padding="16,10,16,10" Margin="0,2,0,2"
+                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
+          <Button Tag="Chat" Content="Chat" Click="NavButton_Click"
+                  Background="Transparent"
+                  Foreground="{StaticResource BrushMuted}"
+                  FontSize="14" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  Padding="16,10,16,10" Margin="0,2,0,2"
+                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
+          <Button Tag="Conversations" Content="Conversations" Click="NavButton_Click"
+                  Background="Transparent"
+                  Foreground="{StaticResource BrushMuted}"
+                  FontSize="14" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  Padding="16,10,16,10" Margin="0,2,0,2"
+                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
+          <Button Tag="Memory Vault" Content="Memory Vault" Click="NavButton_Click"
+                  Background="Transparent"
+                  Foreground="{StaticResource BrushMuted}"
+                  FontSize="14" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  Padding="16,10,16,10" Margin="0,2,0,2"
+                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
+          <Button Tag="Tools" Content="Tools" Click="NavButton_Click"
+                  Background="Transparent"
+                  Foreground="{StaticResource BrushMuted}"
+                  FontSize="14" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  Padding="16,10,16,10" Margin="0,2,0,2"
+                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
+          <Button Tag="Devices" Content="Devices" Click="NavButton_Click"
+                  Background="Transparent"
+                  Foreground="{StaticResource BrushMuted}"
+                  FontSize="14" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  Padding="16,10,16,10" Margin="0,2,0,2"
+                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
+          <Button Tag="Activity" Content="Activity" Click="NavButton_Click"
+                  Background="Transparent"
+                  Foreground="{StaticResource BrushMuted}"
+                  FontSize="14" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  Padding="16,10,16,10" Margin="0,2,0,2"
+                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
+          <Button Tag="Settings" Content="Settings" Click="NavButton_Click"
+                  Background="Transparent"
+                  Foreground="{StaticResource BrushMuted}"
+                  FontSize="14" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  Padding="16,10,16,10" Margin="0,2,0,2"
+                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
+        </StackPanel>
+      </Border>
 
-    <!-- Input bar -->
-    <Border Grid.Row="3" Background="{StaticResource BrushPanel}"
-            BorderBrush="{StaticResource BrushGold}" BorderThickness="0,1,0,0"
-            Padding="16,12">
-      <Grid>
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-        <TextBox x:Name="InputBox" Grid.Column="0" Margin="0,0,12,0"
-                 KeyDown="InputBox_KeyDown"/>
-        <Button x:Name="SendButton" Grid.Column="1" Content="Send"
-                Click="SendButton_Click"/>
-      </Grid>
-    </Border>
+      <ContentControl Grid.Column="1" x:Name="ContentArea"/>
+    </Grid>
   </Grid>
 </Window>

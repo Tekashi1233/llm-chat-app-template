@@ -1,0 +1,60 @@
+<UserControl x:Class="Athena.Views.MemoryVaultView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{StaticResource BrushBackground}">
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+    </Grid.RowDefinitions>
+    <Border Grid.Row="0" Background="{StaticResource BrushPanel}"
+            BorderBrush="{StaticResource BrushGold}" BorderThickness="0,0,0,1"
+            Padding="16,10">
+      <TextBlock Text="Memory Vault" FontFamily="Georgia"
+                 FontSize="18" FontWeight="Bold"
+                 Foreground="{StaticResource BrushGold}"
+                 VerticalAlignment="Center"/>
+    </Border>
+    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="16,12,16,4">
+      <TextBox x:Name="SearchBox" Width="280" Margin="0,0,8,0"
+               TextChanged="Filter_Changed"/>
+      <ComboBox x:Name="KindBox" Width="130" Margin="0,0,8,0"
+                SelectedIndex="0" SelectionChanged="Filter_Changed">
+        <ComboBoxItem Content="All"/>
+        <ComboBoxItem Content="fact"/>
+        <ComboBoxItem Content="preference"/>
+        <ComboBoxItem Content="project"/>
+        <ComboBoxItem Content="plan"/>
+      </ComboBox>
+      <ComboBox x:Name="StatusBox" Width="130"
+                SelectedIndex="0" SelectionChanged="Filter_Changed">
+        <ComboBoxItem Content="All"/>
+        <ComboBoxItem Content="active"/>
+        <ComboBoxItem Content="superseded"/>
+      </ComboBox>
+    </StackPanel>
+    <Grid Grid.Row="2" Margin="16,8,16,12">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+      <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto"
+                    Margin="0,0,8,0">
+        <StackPanel x:Name="ListPanel"/>
+      </ScrollViewer>
+      <Border Grid.Column="1" Background="{StaticResource BrushCard}"
+              BorderBrush="{StaticResource BrushGold}" BorderThickness="1"
+              CornerRadius="6" Padding="14,10" Margin="8,0,0,0">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <StackPanel x:Name="DetailPanel">
+            <TextBlock Text="Select a memory to see the details."
+                       FontSize="13"
+                       Foreground="{StaticResource BrushMuted}"
+                       TextWrapping="TextWrapping.Wrap"/>
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
+    </Grid>
+  </Grid>
+</UserControl>

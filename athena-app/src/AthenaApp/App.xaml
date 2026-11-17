@@ -6,6 +6,7 @@
     <!-- ATHENA palette: Obsidian & Bronze (matches the web interface). -->
     <SolidColorBrush x:Key="BrushBackground" Color="#0E0F11"/>
     <SolidColorBrush x:Key="BrushPanel" Color="#16181C"/>
+    <SolidColorBrush x:Key="BrushCard" Color="#1B1E23"/>
     <SolidColorBrush x:Key="BrushGold" Color="#D4AF37"/>
     <SolidColorBrush x:Key="BrushOlive" Color="#4A6B5D"/>
     <SolidColorBrush x:Key="BrushText" Color="#F3F1EC"/>

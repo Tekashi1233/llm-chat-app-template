@@ -113,6 +113,112 @@ else
     Console.WriteLine("SKIP dpapi: Windows-only (run on the laptop to verify).");
 }
 
+// ---------- N2: ConversationStore ----------
+var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+BackupMessage Msg(long id, string conv, string role, string content, long ms) =>
+    new(id, conv, role, content, ms, "user");
+var storeMsgs = new[]
+{
+    Msg(1, "c-old", "user", "Hello, who are you?", nowMs - 86_400_000),
+    Msg(2, "c-old", "assistant", "I am ATHENA.", nowMs - 86_400_000 + 1000),
+    Msg(3, "c-new", "user", "What is the weather in Riyadh today please?", nowMs - 60_000),
+    Msg(4, "c-new", "assistant", "Clear, 22 degrees.", nowMs - 59_000),
+    Msg(5, "c-new", "user", "And tomorrow?", nowMs - 30_000),
+};
+var grouped = ConversationStore.GroupMessages(storeMsgs);
+Eq("conversations: two groups, newest first", grouped.Count, 2);
+Eq("conversations: newest is c-new", grouped[0].Id, "c-new");
+Eq("conversations: title is first user message", grouped[0].Title,
+    "What is the weather in Riyadh today please?");
+Eq("conversations: message count", grouped[0].MessageCount, 3);
+Eq("conversations: old title", grouped[1].Title, "Hello, who are you?");
+Check("conversations: search finds title",
+    ConversationStore.Search(grouped, "weather").Count == 1);
+Check("conversations: search is case-insensitive",
+    ConversationStore.Search(grouped, "RIYADH").Count == 1);
+Check("conversations: empty query returns all",
+    ConversationStore.Search(grouped, "").Count == 2);
+Check("conversations: no match returns none",
+    ConversationStore.Search(grouped, "zzz-no-such-thing").Count == 0);
+Eq("conversations: title truncates long first lines",
+    ConversationStore.TruncateTitle(new string('x', 60)).Length, 48);
+Check("time: just now", ConversationStore.RelativeTime(DateTimeOffset.Now) == "just now");
+Check("time: minutes ago",
+    ConversationStore.RelativeTime(DateTimeOffset.Now.AddMinutes(-5)) == "5 minutes ago");
+Check("time: hours ago",
+    ConversationStore.RelativeTime(DateTimeOffset.Now.AddHours(-3)) == "3 hours ago");
+Check("time: yesterday",
+    ConversationStore.RelativeTime(DateTimeOffset.Now.AddDays(-1)) == "Yesterday");
+
+// ---------- N2: ToolCatalog ----------
+Check("tools: 13 registered tools", ToolCatalog.All.Length == 13);
+Check("tools: names unique",
+    ToolCatalog.All.Select(t => t.Name).Distinct().Count() == 13);
+Check("tools: remember_fact present",
+    ToolCatalog.All.Any(t => t.Name == "remember_fact"));
+Check("tools: every tool has a description",
+    ToolCatalog.All.All(t => !string.IsNullOrWhiteSpace(t.Description)));
+
+// ---------- N2: DataClient with mocked HTTP ----------
+var mockInfo = new DataClient(MockClient(HttpStatusCode.OK,
+    "{\"assistant\":\"ATHENA\",\"provider\":\"Cloudflare Workers AI\"," +
+    "\"configured_model\":\"@cf/openai/gpt-oss-20b\",\"reasoning_effort\":\"medium\"," +
+    "\"streaming\":true,\"tools\":[\"get_weather\",\"remember_fact\"]," +
+    "\"auth\":\"x-vesper-key\",\"memory\":\"d1\",\"status\":\"configured\"}"));
+var info = await mockInfo.GetModelInfoAsync();
+Eq("data: model-info assistant", info.Assistant, "ATHENA");
+Eq("data: model-info tools parsed", info.Tools.Length, 2);
+Check("data: remember_fact registered in model-info",
+    ToolCatalog.All.First(t => t.Name == "remember_fact").IsRegistered(info));
+
+var mockBackup = new DataClient(MockClient(HttpStatusCode.OK,
+    "{\"exported_at\":\"2026-11-17T12:00:00.000Z\",\"count\":2,\"messages\":[" +
+    "{\"id\":1,\"conversation_id\":\"c1\",\"role\":\"user\",\"content\":\"hi\",\"created_at\":1794960000000,\"origin\":\"user\"}," +
+    "{\"id\":2,\"conversation_id\":\"c1\",\"role\":\"assistant\",\"content\":\"hello\",\"created_at\":1794960001000,\"origin\":\"server\"}]}"));
+var backup = await mockBackup.GetBackupAsync("k");
+Eq("data: backup count", backup.Count, 2);
+Eq("data: backup message role", backup.Messages[0].Role, "user");
+Eq("data: backup created_at parses",
+    backup.Messages[0].CreatedAt.ToString("yyyy"), "2026");
+
+var mock404 = new DataClient(MockClient(HttpStatusCode.NotFound));
+Check("data: memories 404 (endpoint not deployed) returns null",
+    await mock404.GetMemoriesAsync("k", "c1") is null);
+Check("data: device status 404 returns null",
+    await mock404.GetDeviceStatusAsync("k") is null);
+Check("data: device activity 404 returns null",
+    await mock404.GetDeviceActivityAsync("k") is null);
+
+var mockMem = new DataClient(MockClient(HttpStatusCode.OK,
+    "{\"conversation_id\":\"c1\",\"count\":1,\"memories\":[" +
+    "{\"id\":7,\"kind\":\"fact\",\"topic\":\"favourite colour\",\"fact\":\"Crimson.\"," +
+    "\"project\":null,\"source\":\"user\",\"created_at\":1794960000000," +
+    "\"updated_at\":1794960000000,\"superseded_by\":null,\"status\":\"active\"}]}"));
+var mems = await mockMem.GetMemoriesAsync("k", "c1");
+Check("data: memories parse", mems?.Memories.Length == 1);
+Eq("data: memory topic", mems?.Memories[0].Topic, "favourite colour");
+Eq("data: memory source label", mems?.Memories[0].SourceLabel,
+    "You told ATHENA directly");
+
+var mockDev = new DataClient(MockClient(HttpStatusCode.OK,
+    "{\"online\":true,\"device\":\"DESKTOP-9NRU515\",\"last_seen_seconds_ago\":9," +
+    "\"cpu_percent\":15.9,\"ram_used_gb\":6.9,\"ram_total_gb\":11.9," +
+    "\"disks\":[{\"drive\":\"C:\",\"free_gb\":109.2,\"total_gb\":237.8}]," +
+    "\"network\":{\"interface\":\"Wi-Fi\",\"down_mbps\":48.0,\"up_mbps\":12.0}," +
+    "\"uptime_hours\":3.8}"));
+var dev = await mockDev.GetDeviceStatusAsync("k");
+Check("data: device online", dev?.Online == true);
+Eq("data: device cpu", dev?.CpuPercent, 15.9);
+Eq("data: device disk free", dev?.Disks?[0].FreeGb, 109.2);
+
+var mockAct = new DataClient(MockClient(HttpStatusCode.OK,
+    "{\"device\":\"DESKTOP-9NRU515\",\"count\":1,\"actions\":[" +
+    "{\"kind\":\"open_app\",\"detail\":\"Opened Notepad.\",\"approved\":1," +
+    "\"created_at\":1794960000000}]}"));
+var acts = await mockAct.GetDeviceActivityAsync("k");
+Check("data: activity parses", acts?.Actions.Length == 1);
+Check("data: activity approved", acts?.Actions[0].WasApproved == true);
+
 // ---------- Live backend (only with ATHENA_TEST_KEY) ----------
 var liveKey = Environment.GetEnvironmentVariable("ATHENA_TEST_KEY");
 if (!string.IsNullOrWhiteSpace(liveKey))
@@ -128,6 +234,18 @@ if (!string.IsNullOrWhiteSpace(liveKey))
         liveKey, "n1-live-test");
     Check("live: chat round-trip answers",
         reply.Contains('4'), $"reply=[{reply}]");
+    // N2 live: model-info tools match the static catalogue exactly.
+    var liveData = new DataClient();
+    var liveInfo = await liveData.GetModelInfoAsync();
+    Check("live: model-info tools match ToolCatalog",
+        liveInfo.Tools.OrderBy(t => t).SequenceEqual(
+            ToolCatalog.All.Select(t => t.Name).OrderBy(t => t)),
+        $"server=[{string.Join(",", liveInfo.Tools)}]");
+    // N2 live: backup reads and groups (read-only, no rows created).
+    var liveBackup = await liveData.GetBackupAsync(liveKey);
+    var liveGroups = ConversationStore.GroupMessages(liveBackup.Messages);
+    Check("live: backup groups into conversations",
+        liveGroups.Count >= 1 && liveBackup.Count == liveBackup.Messages.Length);
 }
 else
 {
@@ -209,6 +327,22 @@ else
         !csprojText.Contains("<InvariantGlobalization>true</InvariantGlobalization>"));
     Check("wpf: UseWPF is enabled",
         csprojText.Contains("<UseWPF>true</UseWPF>"));
+
+    // N2 shell structure (regression: navigation). appDir is in scope
+    // here because this block declares it above.
+    var shell = File.ReadAllText(Path.Combine(appDir, "MainWindow.xaml"));
+    foreach (var section in new[]
+        { "Dashboard", "Chat", "Conversations", "Memory Vault",
+          "Tools", "Devices", "Activity", "Settings" })
+        Check($"shell: nav section present ({section})",
+            shell.Contains($"Tag=\"{section}\""));
+    Check("shell: content area present", shell.Contains("x:Name=\"ContentArea\""));
+    foreach (var view in new[]
+        { "DashboardView", "ChatView", "ConversationsView", "MemoryVaultView",
+          "ToolsView", "DevicesView", "ActivityView", "SettingsView" })
+        Check($"shell: view exists ({view})",
+            File.Exists(Path.Combine(appDir, "Views", view + ".xaml")) &&
+            File.Exists(Path.Combine(appDir, "Views", view + ".xaml.cs")));
 }
 
 Console.WriteLine($"\n{passes} passed, {failures.Count} failed");

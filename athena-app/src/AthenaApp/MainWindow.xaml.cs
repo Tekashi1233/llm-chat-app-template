@@ -1,28 +1,37 @@
 using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
 using System.Windows.Media;
 using Athena.Core;
+using Athena.Views;
 
 namespace Athena;
 
 /// <summary>
-/// N1 chat shell: one window, one conversation, the existing backend.
-/// History lives on the server (the Worker loads it per conversation),
-/// so a follow-up question works exactly as on the website.
+/// N2 Command Centre shell: sidebar navigation, top bar with
+/// connection status, and one content area. The single ChatView
+/// instance lives for the whole session so chat state survives
+/// navigation; every other view is created fresh per visit.
+/// First-run key setup, the connection check and the initial
+/// data load live here, as in N1.
 /// </summary>
 public partial class MainWindow : Window
 {
-    private readonly ChatClient _client = new();
-    private string? _apiKey;
-    private string _conversationId = "";
-    private bool _sending;
+    private readonly AppState _state = new();
+    private readonly ChatView _chatView;
+    private readonly List<Button> _navButtons = new();
 
     public MainWindow()
     {
         InitializeComponent();
+        _chatView = new ChatView(_state, SetStatus);
+        foreach (var child in NavPanel.Children)
+        {
+            if (child is Button button)
+                _navButtons.Add(button);
+        }
         Loaded += async (_, _) => await InitialiseAsync();
+        NavigateTo("Chat");
     }
 
     private async Task InitialiseAsync()
@@ -30,37 +39,76 @@ public partial class MainWindow : Window
         SetStatus("Starting…", Colors.Gray);
         try
         {
-            _conversationId = SecureStore.GetOrCreateConversationId();
+            _state.ConversationId = SecureStore.GetOrCreateConversationId();
         }
         catch (Exception ex)
         {
-            AddSystemMessage(
+            _chatView.AddSystemMessage(
                 "Could not open local settings. ATHENA can still chat once a key is set, " +
                 "but this session will not be remembered.\n" + ex.Message,
                 isError: true);
-            _conversationId = Guid.NewGuid().ToString();
+            _state.ConversationId = Guid.NewGuid().ToString();
         }
 
-        _apiKey = SecureStore.TryLoadKey();
-        if (string.IsNullOrWhiteSpace(_apiKey))
+        _state.ApiKey = SecureStore.TryLoadKey();
+        if (string.IsNullOrWhiteSpace(_state.ApiKey))
         {
             SetStatus("No key yet", Colors.Gray);
-            AddSystemMessage(
+            _chatView.AddSystemMessage(
                 "Welcome to ATHENA. To start chatting, set your site key " +
                 "(the same key the website uses). It is stored encrypted " +
                 "on this computer only — never in the app itself.",
                 isError: false);
-            var setup = new SetupWindow(_client);
+            var setup = new SetupWindow(_state.Chat);
             if (setup.ShowDialog() == true)
-                _apiKey = SecureStore.TryLoadKey();
+                _state.ApiKey = SecureStore.TryLoadKey();
         }
 
-        if (!string.IsNullOrWhiteSpace(_apiKey))
+        if (!string.IsNullOrWhiteSpace(_state.ApiKey))
             await CheckConnectionAsync();
         else
             SetStatus("No key — use “Set key” above", Colors.Gray);
 
-        InputBox.Focus();
+        await LoadDataAsync();
+        _chatView.RenderConversation();
+        _chatView.FocusInput();
+    }
+
+    /// <summary>Re-validates the key and reloads model info + backup (used after a key change).</summary>
+    public async Task ReconnectAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_state.ApiKey))
+        {
+            await CheckConnectionAsync();
+            await LoadDataAsync();
+            _chatView.RenderConversation();
+        }
+        else
+        {
+            SetStatus("No key — use “Set key” above", Colors.Gray);
+        }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_state.ApiKey)) return;
+        // Best effort: views surface their own errors if these fail.
+        try
+        {
+            _state.ModelInfo = await _state.Data.GetModelInfoAsync();
+        }
+        catch (Exception)
+        {
+            // Left null; views show "couldn't read model info".
+        }
+        try
+        {
+            _state.Backup = await _state.Data.GetBackupAsync(_state.ApiKey);
+        }
+        catch (Exception)
+        {
+            // Left null; views fetch again and show their own errors.
+        }
     }
 
     private async Task CheckConnectionAsync()
@@ -68,7 +116,7 @@ public partial class MainWindow : Window
         SetStatus("Checking connection…", Colors.Gray);
         try
         {
-            var result = await _client.ValidateKeyAsync(_apiKey!);
+            var result = await _state.Chat.ValidateKeyAsync(_state.ApiKey!);
             switch (result)
             {
                 case KeyValidationResult.Valid:
@@ -76,7 +124,7 @@ public partial class MainWindow : Window
                     break;
                 case KeyValidationResult.Invalid:
                     SetStatus("Key invalid — use “Set key”", Colors.Red);
-                    AddSystemMessage(
+                    _chatView.AddSystemMessage(
                         "The stored key was rejected. Please set the correct site key.",
                         isError: true);
                     break;
@@ -98,141 +146,67 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SetStatus(string text, Color dot)
+    public void SetStatus(string text, Color dot)
     {
         StatusText.Text = text;
         StatusDot.Fill = new SolidColorBrush(dot);
     }
 
-    private async void SendButton_Click(object sender, RoutedEventArgs e) =>
-        await SendAsync();
-
-    private async void InputBox_KeyDown(object sender, KeyEventArgs e)
+    /// <summary>Switches the content area. Called by sidebar buttons and by views (e.g. open a conversation in Chat).</summary>
+    public async void NavigateTo(string section)
     {
-        if (e.Key == Key.Enter)
+        foreach (var button in _navButtons)
         {
-            e.Handled = true;
-            await SendAsync();
-        }
-    }
-
-    private async Task SendAsync()
-    {
-        if (_sending) return;
-        var text = InputBox.Text;
-        if (!MessageValidation.IsValidUserMessage(text)) return;
-        if (string.IsNullOrWhiteSpace(_apiKey))
-        {
-            AddSystemMessage("Set your site key first (button above).", isError: true);
-            return;
+            var active = (string?)button.Tag == section;
+            button.Foreground = (Brush)(active
+                ? FindResource("BrushGold")
+                : FindResource("BrushMuted"));
+            button.BorderBrush = (Brush)(active
+                ? FindResource("BrushGold")
+                : Brushes.Transparent);
         }
 
-        _sending = true;
-        SendButton.IsEnabled = false;
-        InputBox.Text = "";
-        AddMessage("You", text.Trim(), isUser: true);
-        ThinkingText.Visibility = Visibility.Visible;
-
-        try
+        UserControl view = section switch
         {
-            var reply = await _client.SendMessageAsync(
-                text, _apiKey, _conversationId);
-            AddMessage("ATHENA", reply, isUser: false);
-        }
-        catch (AthenaApiException ex)
-        {
-            AddSystemMessage(ex.Message, isError: true);
-        }
-        catch (HttpRequestException)
-        {
-            AddSystemMessage(
-                "Couldn't reach ATHENA — check your connection and try again.",
-                isError: true);
-        }
-        catch (TaskCanceledException)
-        {
-            AddSystemMessage(
-                "The request timed out. Your message was not answered — try again.",
-                isError: true);
-        }
-        finally
-        {
-            ThinkingText.Visibility = Visibility.Collapsed;
-            SendButton.IsEnabled = true;
-            _sending = false;
-            InputBox.Focus();
-        }
-    }
-
-    private void AddMessage(string who, string text, bool isUser)
-    {
-        var left = isUser ? 80d : 0d;
-        var right = isUser ? 0d : 80d;
-        var bubble = new Border
-        {
-            Background = (Brush)(isUser
-                ? FindResource("BrushUserBubble")
-                : FindResource("BrushPanel")),
-            BorderBrush = (Brush)FindResource("BrushGold"),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(12, 8, 12, 8),
-            Margin = new Thickness(left, 6, right, 6),
-            HorizontalAlignment = isUser
-                ? HorizontalAlignment.Right
-                : HorizontalAlignment.Left,
+            "Dashboard" => new DashboardView(_state, NavigateTo),
+            "Chat" => _chatView,
+            "Conversations" => new ConversationsView(_state, NavigateTo),
+            "Memory Vault" => new MemoryVaultView(_state),
+            "Tools" => new ToolsView(_state),
+            "Devices" => new DevicesView(_state),
+            "Activity" => new ActivityView(_state),
+            "Settings" => new SettingsView(_state, async () => await ReconnectAsync()),
+            _ => _chatView,
         };
-        var stack = new StackPanel();
-        stack.Children.Add(new TextBlock
+        ContentArea.Content = view;
+
+        // Chat manages itself; every other view reloads on visit.
+        if (view is IRefreshable refreshable && view is not ChatView)
         {
-            Text = who,
-            FontSize = 11,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = (Brush)FindResource("BrushGold"),
-            Margin = new Thickness(0, 0, 0, 4),
-        });
-        stack.Children.Add(new TextBlock
-        {
-            Text = text,
-            FontSize = 14,
-            Foreground = (Brush)FindResource("BrushText"),
-            TextWrapping = TextWrapping.Wrap,
-        });
-        bubble.Child = stack;
-        MessagesPanel.Children.Add(bubble);
-        ScrollToBottom();
+            try
+            {
+                await refreshable.RefreshAsync(_state);
+            }
+            catch (Exception)
+            {
+                // Views show their own loading/error states inline.
+            }
+        }
     }
 
-    private void AddSystemMessage(string text, bool isError)
+    private void NavButton_Click(object sender, RoutedEventArgs e)
     {
-        MessagesPanel.Children.Add(new TextBlock
-        {
-            Text = text,
-            FontSize = 13,
-            FontStyle = FontStyles.Italic,
-            Foreground = isError
-                ? new SolidColorBrush(Color.FromRgb(0xE8, 0x8A, 0x8A))
-                : (Brush)FindResource("BrushMuted"),
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 6, 0, 6),
-        });
-        ScrollToBottom();
+        if (sender is Button button && button.Tag is string section)
+            NavigateTo(section);
     }
 
-    private void ScrollToBottom()
+    private async void SetKeyButton_Click(object sender, RoutedEventArgs e)
     {
-        // The ScrollViewer is the parent of MessagesPanel.
-        if (MessagesPanel.Parent is ScrollViewer scroller)
-            scroller.ScrollToEnd();
-    }
-
-    private void SetKeyButton_Click(object sender, RoutedEventArgs e)
-    {
-        var setup = new SetupWindow(_client);
+        var setup = new SetupWindow(_state.Chat);
         if (setup.ShowDialog() == true)
         {
-            _apiKey = SecureStore.TryLoadKey();
-            _ = CheckConnectionAsync();
+            _state.ApiKey = SecureStore.TryLoadKey();
+            await ReconnectAsync();
         }
     }
 }

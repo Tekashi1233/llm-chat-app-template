@@ -1,10 +1,11 @@
-# ATHENA — Native Windows Shell (N1)
+# ATHENA — Native Windows App (N1 shell + N2 Command Centre)
 
 A genuine, Chrome-free native Windows desktop app (C# + WPF, .NET 8)
 that chats with the existing ATHENA backend — the Cloudflare Worker
-that used to be VESPER. N1 is a minimal shell: branding, chat,
-session history, connection status, and first-run key setup. The
-Command Centre (N2) and Dynamic Island (N3) come later.
+that used to be VESPER. N1 built the minimal shell; **N2 expands it
+into the full Command Centre**: Dashboard, Chat, Conversations,
+Memory Vault, Tools, Devices, Activity and Settings, in one sidebar.
+The Dynamic Island (N3) and voice (N4) come later.
 
 ## What N1 is (and is not)
 
@@ -89,19 +90,27 @@ DPAPI round-trip tests run on Windows only and are skipped on Linux
 with a note. The WPF window itself can only be launched on Windows —
 the UI launch test belongs on the real laptop.
 
-## Known limitations (N1)
+## Known limitations (N2)
 
+- **Memory Vault, Devices and Activity need three new read-only
+  endpoints** (`GET /api/memories`, `GET /api/devices/status`,
+  `GET /api/devices/activity`). They are written and type-checked on
+  the `n2-read-endpoints` branch — see `N2-ENDPOINTS.md` — but NOT
+  deployed. Until the owner approves the merge, those three sections
+  show an honest "not enabled yet" note instead of data. Everything
+  else in N2 works on the existing API.
 - No voice yet (N4). No tray icon, no startup-on-boot, no
-  notifications (N3/N6). No Command Centre screens (N2). No device
-  commands from this app yet — the Companion still owns those (N5).
+  notifications (N3/N6). No device commands from this app yet — the
+  Companion still owns those (N5).
 - The exe is unsigned (SmartScreen warning, see above).
 - Conversation history is server-side per conversation id; the app
   keeps the session's messages in memory only.
 - If the laptop is offline, the app shows Offline and sending fails
   with a plain error — it does not queue messages (N6).
 
-## What remains for N2
+## What remains for N3
 
-Full Command Centre: conversations list, Memory Vault view, tools
-list, device status, activity history, settings/permissions screens —
-built on this shell's `Athena.Core` client.
+Floating Dynamic Island: compact pill, idle/listening/thinking/
+speaking/working/approval/offline/error states driven by real app
+events, draggable with remembered position, expand to the Command
+Centre, always-on-top control.

@@ -11,6 +11,12 @@ public static class AthenaApi
         "https://llm-chat-app-template.thanosabdulla.workers.dev";
     public const string ChatPath = "/api/chat";
     public const string ModelInfoPath = "/api/model-info";
+    public const string BackupPath = "/api/backup";
+    // N2 read endpoints: on the n2-read-endpoints branch until the
+    // owner approves them. DataClient returns null on HTTP 404.
+    public const string MemoriesPath = "/api/memories";
+    public const string DeviceStatusPath = "/api/devices/status";
+    public const string DeviceActivityPath = "/api/devices/activity";
 }
 
 /// <summary>An error returned by the backend, with its HTTP status.</summary>
