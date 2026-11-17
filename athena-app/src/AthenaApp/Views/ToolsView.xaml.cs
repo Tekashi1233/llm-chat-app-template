@@ -31,9 +31,13 @@ public partial class ToolsView : UserControl, IRefreshable
         catch (Exception ex)
         {
             // Model info is optional here: availability just becomes unknown.
+            // N6: a failed read must not present the previously cached
+            // model info as current — render with unknown availability,
+            // plus what to do next.
             ContentPanel.Children.Clear();
             ContentPanel.Children.Add(ViewHelpers.BodyText(ViewHelpers.FriendlyError(ex)));
-            RenderTools(state.ModelInfo);
+            ContentPanel.Children.Add(ViewHelpers.MutedText(ViewHelpers.RetryHintReopen));
+            RenderTools(null);
             return;
         }
         ContentPanel.Children.Clear();

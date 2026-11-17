@@ -214,6 +214,16 @@ public partial class ChatView : UserControl, IRefreshable
         if (_sending) return;
         text ??= InputBox.Text;
         if (!MessageValidation.IsValidUserMessage(text)) return;
+        // N6: an over-long message is told, not silently dropped —
+        // the empty check above stays silent (nothing was typed),
+        // but a real message that is too long gets an answer.
+        if (!MessageValidation.IsWithinLengthLimit(text))
+        {
+            AddSystemMessage(
+                $"That message is too long — keep it under {MessageValidation.MaxMessageLength} characters.",
+                isError: true);
+            return;
+        }
         if (!_state.HasAuth)
         {
             AddSystemMessage("Sign in first (menu (···) → Settings).", isError: true);
@@ -276,6 +286,16 @@ public partial class ChatView : UserControl, IRefreshable
                 "The request timed out. Your message was not answered — try again.",
                 isError: true);
             _state.SetPresenceState(PresenceState.Offline, PresenceSource.Chat, "Offline — timed out");
+        }
+        catch (Exception)
+        {
+            // N6: anything unexpected still ends as an honest
+            // message in the feed, never as a crash out of the
+            // async send handler — the message was not answered.
+            AddSystemMessage(
+                "Something went wrong and your message was not answered — try again.",
+                isError: true);
+            _state.SetPresenceState(PresenceState.Error, PresenceSource.Chat, "Something went wrong");
         }
         finally
         {

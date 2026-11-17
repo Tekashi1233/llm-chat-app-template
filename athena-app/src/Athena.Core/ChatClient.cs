@@ -52,6 +52,10 @@ public sealed class ChatClient : IDisposable
     {
         if (!MessageValidation.IsValidUserMessage(text))
             throw new ArgumentException("Message is empty.", nameof(text));
+        if (!MessageValidation.IsWithinLengthLimit(text))
+            throw new ArgumentException(
+                $"Message is too long — keep it under {MessageValidation.MaxMessageLength} characters.",
+                nameof(text));
         if (string.IsNullOrWhiteSpace(authToken) && string.IsNullOrWhiteSpace(apiKey))
             throw new ArgumentException("No token and no site key to authenticate with.", nameof(apiKey));
 

@@ -11,7 +11,7 @@ namespace Athena.Core;
 public sealed record ToolInfo(string Name, string Description, string Category)
 {
     public bool IsRegistered(ModelInfo? modelInfo) =>
-        modelInfo?.Tools.Contains(Name) ?? false;
+        modelInfo?.Tools?.Contains(Name) ?? false;
 }
 
 public static class ToolCatalog

@@ -53,11 +53,15 @@ public partial class SetupWindow : Window
             // No owner yet: no password is wanted, so use the site key.
             SetMode(status.SetupRequired ? SetupMode.LegacyKey : SetupMode.Login);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        catch (Exception)
         {
-            // Offline: stay in login mode and let the sign-in attempt
-            // report the connection problem honestly.
-            SetMode(SetupMode.Login);
+            // N6: offline OR a bad/unexpected answer — either way
+            // the sign-in state could not be checked. Fall back to
+            // the site-key flow (the no-password default): the key
+            // check reports the connection problem honestly when
+            // it is tried, instead of showing a password screen
+            // for a password that does not exist.
+            SetMode(SetupMode.LegacyKey);
             StatusText.Text = "Couldn't reach the backend — check your connection, then try signing in.";
         }
     }
@@ -160,6 +164,13 @@ public partial class SetupWindow : Window
         {
             StatusText.Text = "Couldn't reach the backend. Check your connection and try again.";
         }
+        catch (Exception)
+        {
+            // N6: a malformed answer or a local save failure ends
+            // here as an honest message, never as a crash out of
+            // the click handler.
+            StatusText.Text = "Something went wrong — check your connection and try again.";
+        }
     }
 
     private async Task SetupAsync()
@@ -207,6 +218,13 @@ public partial class SetupWindow : Window
         {
             StatusText.Text = "Couldn't reach the backend. Check your connection and try again.";
         }
+        catch (Exception)
+        {
+            // N6: a malformed answer or a local save failure ends
+            // here as an honest message, never as a crash out of
+            // the click handler.
+            StatusText.Text = "Something went wrong — check your connection and try again.";
+        }
     }
 
     private async Task LegacyKeyAsync()
@@ -243,6 +261,13 @@ public partial class SetupWindow : Window
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             StatusText.Text = "Couldn't reach the backend. Check your connection and try again.";
+        }
+        catch (Exception)
+        {
+            // N6: a malformed answer or a local save failure ends
+            // here as an honest message, never as a crash out of
+            // the click handler.
+            StatusText.Text = "Something went wrong — check your connection and try again.";
         }
     }
 

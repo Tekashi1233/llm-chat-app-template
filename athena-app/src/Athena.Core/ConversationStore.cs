@@ -77,16 +77,16 @@ public static class ConversationStore
         return when.ToLocalTime().ToString("d MMM yyyy");
     }
 
-    public static string TruncateTitle(string text)
+    public static string TruncateTitle(string? text)
     {
-        var oneLine = text.Trim().ReplaceLineEndings(" ");
+        var oneLine = (text ?? "").Trim().ReplaceLineEndings(" ");
         if (oneLine.Length <= 48) return oneLine;
         return oneLine[..47].TrimEnd() + "…";
     }
 
-    public static string TruncateSnippet(string text)
+    public static string TruncateSnippet(string? text)
     {
-        var oneLine = text.Trim().ReplaceLineEndings(" ");
+        var oneLine = (text ?? "").Trim().ReplaceLineEndings(" ");
         if (oneLine.Length <= 80) return oneLine;
         return oneLine[..79].TrimEnd() + "…";
     }
