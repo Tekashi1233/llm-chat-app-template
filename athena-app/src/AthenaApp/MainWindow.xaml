@@ -18,7 +18,7 @@
             BorderBrush="{StaticResource BrushGold}" BorderThickness="0,0,0,1"
             Padding="16,10">
       <DockPanel>
-        <TextBlock Text="ATHENA" FontFamily="Georgia, 'Times New Roman', serif"
+        <TextBlock Text="ATHENA" FontFamily="Georgia"
                    FontSize="22" FontWeight="Bold"
                    Foreground="{StaticResource BrushGold}"
                    VerticalAlignment="Center"/>

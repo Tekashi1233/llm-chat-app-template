@@ -23,6 +23,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Athena.Core\Athena.Core.csproj" />
+    <!-- The window Icon="icon.ico" in MainWindow.xaml resolves this as a
+         WPF resource at runtime. Without this line the file is only the
+         exe's native icon (ApplicationIcon) and the window fails to load. -->
+    <Resource Include="icon.ico" />
   </ItemGroup>
 
 </Project>
