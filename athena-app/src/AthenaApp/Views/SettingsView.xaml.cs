@@ -217,23 +217,6 @@ public partial class SettingsView : UserControl, IRefreshable
         }
         ContentPanel.Children.Add(voiceCard);
 
-        // Island (N3).
-        var islandCard = ViewHelpers.Card("Island", out var islandBody);
-        islandBody.Children.Add(ViewHelpers.BodyText(
-            "The floating Island is a small pill that shows what ATHENA is doing — idle, thinking, offline or error. " +
-            "Drag it anywhere; single-click expands it to the last reply, double-click opens the Command Centre. " +
-            "Right-click it for always-on-top and hide."));
-        var showIslandButton = new Button
-        {
-            Content = "Show the floating Island",
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Padding = new Thickness(10, 4, 10, 4),
-            Margin = new Thickness(0, 6, 0, 0),
-        };
-        showIslandButton.Click += (_, _) => _state.RequestShowIsland();
-        islandBody.Children.Add(showIslandButton);
-        ContentPanel.Children.Add(islandCard);
-
         // Device.
         var deviceCard = ViewHelpers.Card("Device", out var deviceBody);
         try
@@ -282,7 +265,7 @@ public partial class SettingsView : UserControl, IRefreshable
         // About.
         var aboutCard = ViewHelpers.Card("About", out var aboutBody);
         aboutBody.Children.Add(ViewHelpers.BodyText(
-            "ATHENA — N4 Command Centre + Dynamic Island + Voice. Native Windows app, C# + WPF + .NET 8. Backend: Cloudflare Worker + GPT-OSS-20B + D1."));
+            "ATHENA — minimal black identity + voice (N4). Native Windows app, C# + WPF + .NET 8. Backend: Cloudflare Worker + GPT-OSS-20B + D1."));
         ContentPanel.Children.Add(aboutCard);
     }
 

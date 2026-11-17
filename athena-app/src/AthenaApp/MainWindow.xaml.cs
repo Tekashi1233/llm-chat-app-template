@@ -2,49 +2,68 @@ using System.IO;
 using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using Athena.Core;
 using Athena.Views;
 
 namespace Athena;
 
 /// <summary>
-/// N2 Command Centre shell: sidebar navigation, top bar with
-/// connection status, and one content area. The single ChatView
-/// instance lives for the whole session so chat state survives
-/// navigation; every other view is created fresh per visit.
-/// First-run key setup, the connection check and the initial
-/// data load live here, as in N1.
+/// Minimal black identity shell: pure black background, the ATHENA
+/// wordmark in the centre with subtle red + blue light, a discreet
+/// status line, and the single ChatView below. No dashboard, no
+/// sidebar, no floating Island (N3 is cancelled). The six capability
+/// sections (Conversations, Memory Vault, Tools, Devices, Activity,
+/// Settings) live behind the "···" menu as an overlay, reusing the
+/// existing views. The wordmark stays visible during conversations,
+/// smaller, at the top — clicking it returns to the idle screen.
+/// The wordmark lighting follows the presence machine: only states
+/// real events produce ever light up. All glow changes are slow
+/// (0.8–1.6s) fades — no flashing.
+/// First-run key setup, the connection check and the initial data
+/// load live here, as in N1. N4 voice is started here too.
 /// </summary>
 public partial class MainWindow : Window
 {
     private readonly AppState _state = new();
     private readonly ChatView _chatView;
-    private readonly List<Button> _navButtons = new();
-    private IslandWindow? _island;
+    private bool _conversing;
+    private string _connectionStatus = "Starting…";
+    private DispatcherTimer? _glowTimer;
+    private bool _glowSwap;
 
-    /// <summary>Same folder as the DPAPI config (%APPDATA%\Athena); the Island's position file lives here.</summary>
-    private static string IslandStoreDir => Path.Combine(
+    /// <summary>Same folder as the DPAPI config (%APPDATA%\Athena); voice.json lives here too.</summary>
+    private static string AppDataDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Athena");
 
     public MainWindow()
     {
         InitializeComponent();
         _chatView = new ChatView(_state, SetStatus);
-        foreach (var child in NavPanel.Children)
-        {
-            if (child is Button button)
-                _navButtons.Add(button);
-        }
+        ChatArea.Content = _chatView;
+        _chatView.MessagesChanged += UpdateLayoutFromMessages;
+        _state.ConversationChanged += () => UpdateLayoutFromMessages();
+        _state.PresenceChanged += ApplyPresence;
         Loaded += async (_, _) => await InitialiseAsync();
         Closing += MainWindow_Closing;
-        _state.ShowIslandRequested += OnShowIslandRequested;
-        NavigateTo("Chat");
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape && Overlay.Visibility == Visibility.Visible)
+            {
+                CloseOverlay();
+                e.Handled = true;
+            }
+        };
     }
 
     private async Task InitialiseAsync()
     {
         SetStatus("Starting…", Colors.Gray);
+        // The N3 Island is cancelled: drop its leftover position file.
+        try { File.Delete(Path.Combine(AppDataDir, "island.json")); } catch (Exception) { }
         try
         {
             _state.ConversationId = SecureStore.GetOrCreateConversationId();
@@ -65,7 +84,8 @@ public partial class MainWindow : Window
             _chatView.AddSystemMessage(
                 "Welcome to ATHENA. To start chatting, set your site key " +
                 "(the same key the website uses). It is stored encrypted " +
-                "on this computer only — never in the app itself.",
+                "on this computer only — never in the app itself. " +
+                "Open the menu (···) at the top right, then Settings.",
                 isError: false);
             var setup = new SetupWindow(_state.Chat);
             if (setup.ShowDialog() == true)
@@ -75,12 +95,11 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_state.ApiKey))
             await CheckConnectionAsync();
         else
-            SetStatus("No key — use “Set key” above", Colors.Gray);
+            SetStatus("No key — menu (···) → Settings to set it", Colors.Gray);
 
         await LoadDataAsync();
         _chatView.RenderConversation();
         _chatView.FocusInput();
-        ShowIslandIfEnabled();
         InitialiseVoice();
     }
 
@@ -91,27 +110,27 @@ public partial class MainWindow : Window
     /// </summary>
     private void InitialiseVoice()
     {
-        _state.VoiceSettingsDir = IslandStoreDir;
+        _state.VoiceSettingsDir = AppDataDir;
         _state.VoiceSettings =
-            VoiceSettingsStore.Load(IslandStoreDir)?.Clamped()
+            VoiceSettingsStore.Load(AppDataDir)?.Clamped()
             ?? VoiceSettings.Defaults;
         try
         {
             var voice = new VoiceService();
             voice.ApplySettings(_state.VoiceSettings);
             voice.SpeakingStarted += () =>
-                _state.SetIslandState(IslandState.Speaking, IslandTriggerSource.Voice, "Speaking…");
+                _state.SetPresenceState(PresenceState.Speaking, PresenceSource.Voice, "Speaking…");
             voice.SpeakingFinished += () =>
             {
-                if (_state.IslandStatus.State == IslandState.Speaking)
-                    _state.SetIslandState(IslandState.Idle, IslandTriggerSource.Voice, "Idle");
+                if (_state.PresenceStatus.State == PresenceState.Speaking)
+                    _state.SetPresenceState(PresenceState.Idle, PresenceSource.Voice, "Idle");
             };
             voice.ListeningStarted += () =>
-                _state.SetIslandState(IslandState.Listening, IslandTriggerSource.Voice, "Listening…");
+                _state.SetPresenceState(PresenceState.Listening, PresenceSource.Voice, "Listening…");
             voice.ListeningStopped += () =>
             {
-                if (_state.IslandStatus.State == IslandState.Listening)
-                    _state.SetIslandState(IslandState.Idle, IslandTriggerSource.Voice, "Idle");
+                if (_state.PresenceStatus.State == PresenceState.Listening)
+                    _state.SetPresenceState(PresenceState.Idle, PresenceSource.Voice, "Idle");
             };
             _state.Voice = voice;
             _chatView.RefreshVoiceControls();
@@ -124,44 +143,11 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// N3: create the floating Island once, after the connection
-    /// state is known. It shares this window's AppState, so it
-    /// shows the same conversation and backend — no second client.
-    /// </summary>
-    private void ShowIslandIfEnabled()
-    {
-        _island ??= new IslandWindow(_state, IslandStoreDir);
-        _island.OpenCentreRequested -= OnIslandOpenCentre;
-        _island.OpenCentreRequested += OnIslandOpenCentre;
-        var saved = IslandPositionStore.Load(IslandStoreDir);
-        if (saved is null || saved.Visible)
-            _island.ShowIsland();
-    }
-
-    private void OnShowIslandRequested()
-    {
-        ShowIslandIfEnabled();
-        _island?.ShowIsland();
-    }
-
-    private void OnIslandOpenCentre()
-    {
-        NavigateTo("Chat");
-        Activate();
-        _chatView.FocusInput();
-    }
-
     private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        // Stop any speech/recognition first, then save the Island.
+        // Stop any speech/recognition first.
         try { _state.Voice?.Dispose(); } catch (Exception) { }
-        if (_island is not null)
-        {
-            _island.SavePosition();
-            _island.AppExiting = true;
-            _island.Close();
-        }
+        StopGlowTimer();
     }
 
     /// <summary>Re-validates the key and reloads model info + backup (used after a key change).</summary>
@@ -175,7 +161,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            SetStatus("No key — use “Set key” above", Colors.Gray);
+            SetStatus("No key — menu (···) → Settings to set it", Colors.Gray);
         }
     }
 
@@ -213,74 +199,236 @@ public partial class MainWindow : Window
                     SetStatus("Connected", Colors.Green);
                     // Only clear a bad state; the machine refuses a
                     // System Idle while a chat is Thinking.
-                    if (_state.IslandStatus.State is IslandState.Offline or IslandState.Error)
-                        _state.SetIslandState(IslandState.Idle, IslandTriggerSource.System, "Ready");
+                    if (_state.PresenceStatus.State is PresenceState.Offline or PresenceState.Error)
+                        _state.SetPresenceState(PresenceState.Idle, PresenceSource.System, "Ready");
                     break;
                 case KeyValidationResult.Invalid:
-                    SetStatus("Key invalid — use “Set key”", Colors.Red);
+                    SetStatus("Key invalid — menu (···) → Settings to fix it", Colors.Red);
                     _chatView.AddSystemMessage(
                         "The stored key was rejected. Please set the correct site key.",
                         isError: true);
-                    _state.SetIslandState(IslandState.Error, IslandTriggerSource.System, "Key invalid");
+                    _state.SetPresenceState(PresenceState.Error, PresenceSource.System, "Key invalid");
                     break;
                 case KeyValidationResult.RateLimited:
                     SetStatus("Rate limited — wait a minute", Colors.Orange);
-                    _state.SetIslandState(IslandState.Error, IslandTriggerSource.System, "Rate limited");
+                    _state.SetPresenceState(PresenceState.Error, PresenceSource.System, "Rate limited");
                     break;
                 default:
                     SetStatus("Could not reach ATHENA", Colors.Orange);
-                    _state.SetIslandState(IslandState.Offline, IslandTriggerSource.System, "Offline");
+                    _state.SetPresenceState(PresenceState.Offline, PresenceSource.System, "Offline");
                     break;
             }
         }
         catch (HttpRequestException)
         {
             SetStatus("Offline — check your connection", Colors.Orange);
-            _state.SetIslandState(IslandState.Offline, IslandTriggerSource.System, "Offline");
+            _state.SetPresenceState(PresenceState.Offline, PresenceSource.System, "Offline");
         }
         catch (TaskCanceledException)
         {
             SetStatus("Offline — connection timed out", Colors.Orange);
-            _state.SetIslandState(IslandState.Offline, IslandTriggerSource.System, "Offline — timed out");
+            _state.SetPresenceState(PresenceState.Offline, PresenceSource.System, "Offline — timed out");
         }
     }
 
-    public void SetStatus(string text, Color dot)
+    /// <summary>Discreet status line under the wordmark. Also remembers the connection status for when the presence returns to Idle.</summary>
+    public void SetStatus(string text, Color color)
     {
+        _connectionStatus = text;
         StatusText.Text = text;
-        StatusDot.Fill = new SolidColorBrush(dot);
+        StatusText.Foreground = new SolidColorBrush(color);
     }
 
-    /// <summary>Switches the content area. Called by sidebar buttons and by views (e.g. open a conversation in Chat).</summary>
-    public async void NavigateTo(string section)
+    // ----- Layout: idle wordmark vs conversation -----
+
+    private void UpdateLayoutFromMessages()
     {
-        foreach (var button in _navButtons)
+        if (_chatView.MessageCount > 0)
+            SetConversationLayout();
+        else
+            SetIdleLayout();
+    }
+
+    private void SetIdleLayout()
+    {
+        if (!_conversing && WordmarkRow.Height.IsStar) return;
+        _conversing = false;
+        WordmarkRow.Height = new GridLength(1, GridUnitType.Star);
+        ChatRow.Height = GridLength.Auto;
+        AnimateFontSize(72);
+        WordmarkText.Cursor = Cursors.Arrow;
+        WordmarkText.ToolTip = "ATHENA";
+    }
+
+    private void SetConversationLayout()
+    {
+        if (_conversing) return;
+        _conversing = true;
+        WordmarkRow.Height = GridLength.Auto;
+        ChatRow.Height = new GridLength(1, GridUnitType.Star);
+        AnimateFontSize(26);
+        WordmarkText.Cursor = Cursors.Hand;
+        WordmarkText.ToolTip = "Click to return to the idle screen";
+    }
+
+    private void WordmarkText_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!_conversing) return;
+        _state.NewConversation();
+        SetIdleLayout();
+        _chatView.FocusInput();
+    }
+
+    private void AnimateFontSize(double target)
+    {
+        WordmarkText.BeginAnimation(
+            TextBlock.FontSizeProperty,
+            new DoubleAnimation(target, TimeSpan.FromSeconds(0.6))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut },
+            });
+    }
+
+    // ----- Presence → wordmark lighting -----
+
+    private void ApplyPresence(PresenceStatus status)
+    {
+        // The status line shows what ATHENA is doing, except at Idle,
+        // where it goes back to the connection status.
+        if (status.State == PresenceState.Idle)
         {
-            var active = (string?)button.Tag == section;
-            button.Foreground = (Brush)(active
-                ? FindResource("BrushGold")
-                : FindResource("BrushMuted"));
-            button.BorderBrush = (Brush)(active
-                ? FindResource("BrushGold")
-                : Brushes.Transparent);
+            StatusText.Text = _connectionStatus;
+            StatusText.Foreground = (Brush)FindResource("BrushMuted");
+        }
+        else
+        {
+            StatusText.Text = status.Detail;
+            StatusText.Foreground = (Brush)FindResource("BrushMuted");
         }
 
+        StopGlowTimer();
+        switch (status.State)
+        {
+            case PresenceState.Idle:
+                AnimateOpacity(BlueGlow, 0.16);
+                AnimateOpacity(RedGlow, 0.16);
+                break;
+            case PresenceState.Listening:
+                AnimateOpacity(BlueGlow, 0.45);
+                AnimateOpacity(RedGlow, 0.16);
+                break;
+            case PresenceState.Thinking:
+                // Slow cross-fade: blue and red trade prominence
+                // every 1.2s. Gentle, never flashing.
+                _glowSwap = false;
+                StartGlowTimer(TimeSpan.FromSeconds(1.2), () =>
+                {
+                    _glowSwap = !_glowSwap;
+                    AnimateOpacity(BlueGlow, _glowSwap ? 0.14 : 0.42, 1.2);
+                    AnimateOpacity(RedGlow, _glowSwap ? 0.42 : 0.14, 1.2);
+                });
+                break;
+            case PresenceState.Speaking:
+                // Slow pulse on the blue glow while speech plays.
+                // An activity indicator, not a waveform.
+                _glowSwap = false;
+                StartGlowTimer(TimeSpan.FromSeconds(1.6), () =>
+                {
+                    _glowSwap = !_glowSwap;
+                    AnimateOpacity(BlueGlow, _glowSwap ? 0.50 : 0.30, 1.6);
+                    AnimateOpacity(RedGlow, 0.16, 1.6);
+                });
+                break;
+            case PresenceState.Working:
+            case PresenceState.Approval:
+                AnimateOpacity(BlueGlow, 0.30);
+                AnimateOpacity(RedGlow, 0.30);
+                break;
+            case PresenceState.Offline:
+                AnimateOpacity(BlueGlow, 0.07);
+                AnimateOpacity(RedGlow, 0.07);
+                break;
+            case PresenceState.Error:
+                AnimateOpacity(BlueGlow, 0.10);
+                AnimateOpacity(RedGlow, 0.35);
+                break;
+        }
+    }
+
+    private static void AnimateOpacity(UIElement element, double target, double seconds = 0.8)
+    {
+        element.BeginAnimation(
+            UIElement.OpacityProperty,
+            new DoubleAnimation(target, TimeSpan.FromSeconds(seconds))
+            {
+                EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+            });
+    }
+
+    private void StartGlowTimer(TimeSpan interval, Action tick)
+    {
+        StopGlowTimer();
+        _glowTimer = new DispatcherTimer { Interval = interval };
+        _glowTimer.Tick += (_, _) => tick();
+        _glowTimer.Start();
+        tick();
+    }
+
+    private void StopGlowTimer()
+    {
+        if (_glowTimer is null) return;
+        _glowTimer.Stop();
+        _glowTimer = null;
+    }
+
+    // ----- Minimal menu + overlay sections -----
+
+    private void MenuButton_Click(object sender, RoutedEventArgs e) => ShowMenu();
+
+    private void ShowMenu()
+    {
+        OverlayTitle.Text = "Menu";
+        OverlayBackButton.Visibility = Visibility.Collapsed;
+        var panel = new StackPanel();
+        foreach (var section in new[] { "Conversations", "Memory Vault", "Tools", "Devices", "Activity", "Settings" })
+        {
+            var name = section;
+            var button = new Button
+            {
+                Content = name,
+                Background = Brushes.Transparent,
+                Foreground = (Brush)FindResource("BrushText"),
+                FontSize = 15,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Padding = new Thickness(12, 10, 12, 10),
+                Margin = new Thickness(0, 2, 0, 2),
+                BorderThickness = new Thickness(0),
+            };
+            button.Click += (_, _) => ShowSection(name);
+            panel.Children.Add(button);
+        }
+        OverlayContent.Content = panel;
+        Overlay.Visibility = Visibility.Visible;
+    }
+
+    private async void ShowSection(string section)
+    {
+        OverlayTitle.Text = section;
+        OverlayBackButton.Visibility = Visibility.Visible;
         UserControl view = section switch
         {
-            "Dashboard" => new DashboardView(_state, NavigateTo),
-            "Chat" => _chatView,
-            "Conversations" => new ConversationsView(_state, NavigateTo),
+            "Conversations" => new ConversationsView(_state, _ => CloseOverlay()),
             "Memory Vault" => new MemoryVaultView(_state),
             "Tools" => new ToolsView(_state),
             "Devices" => new DevicesView(_state),
             "Activity" => new ActivityView(_state),
             "Settings" => new SettingsView(_state, async () => await ReconnectAsync()),
-            _ => _chatView,
+            _ => new ToolsView(_state),
         };
-        ContentArea.Content = view;
-
-        // Chat manages itself; every other view reloads on visit.
-        if (view is IRefreshable refreshable && view is not ChatView)
+        OverlayContent.Content = view;
+        Overlay.Visibility = Visibility.Visible;
+        if (view is IRefreshable refreshable)
         {
             try
             {
@@ -293,19 +441,16 @@ public partial class MainWindow : Window
         }
     }
 
-    private void NavButton_Click(object sender, RoutedEventArgs e)
+    private void OverlayBackButton_Click(object sender, RoutedEventArgs e) => ShowMenu();
+
+    private void CloseOverlay_Click(object sender, RoutedEventArgs e) => CloseOverlay();
+
+    private void Overlay_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (sender is Button button && button.Tag is string section)
-            NavigateTo(section);
+        // Clicking the dim area (not the panel) closes the overlay.
+        if (e.Source == Overlay)
+            CloseOverlay();
     }
 
-    private async void SetKeyButton_Click(object sender, RoutedEventArgs e)
-    {
-        var setup = new SetupWindow(_state.Chat);
-        if (setup.ShowDialog() == true)
-        {
-            _state.ApiKey = SecureStore.TryLoadKey();
-            await ReconnectAsync();
-        }
-    }
+    private void CloseOverlay() => Overlay.Visibility = Visibility.Collapsed;
 }

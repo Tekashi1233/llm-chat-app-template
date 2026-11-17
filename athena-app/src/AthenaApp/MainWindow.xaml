@@ -3,106 +3,88 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="ATHENA" Height="700" Width="1100"
         MinHeight="560" MinWidth="900"
-        Background="{StaticResource BrushBackground}"
+        Background="#000000"
         Icon="icon.png">
-  <Grid>
+  <Grid x:Name="RootGrid">
     <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="*"/>
+      <RowDefinition x:Name="WordmarkRow" Height="*"/>
+      <RowDefinition x:Name="ChatRow" Height="Auto"/>
     </Grid.RowDefinitions>
 
-    <!-- Header: wordmark + connection status -->
-    <Border Grid.Row="0" Background="{StaticResource BrushPanel}"
-            BorderBrush="{StaticResource BrushGold}" BorderThickness="0,0,0,1"
-            Padding="16,10">
-      <DockPanel>
-        <TextBlock Text="ATHENA" FontFamily="Georgia"
-                   FontSize="22" FontWeight="Bold"
-                   Foreground="{StaticResource BrushGold}"
-                   VerticalAlignment="Center"/>
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
-                    VerticalAlignment="Center">
-          <Ellipse x:Name="StatusDot" Width="10" Height="10" Fill="Gray"
-                   Margin="0,0,8,0"/>
-          <TextBlock x:Name="StatusText" Text="Starting…" FontSize="12"
-                     Foreground="{StaticResource BrushMuted}"
-                     VerticalAlignment="Center"/>
-          <Button x:Name="SetKeyButton" Content="Set key" Margin="16,0,0,0"
-                  Padding="10,4" Click="SetKeyButton_Click"/>
-        </StackPanel>
-      </DockPanel>
-    </Border>
+    <!-- Wordmark zone: pure black, ATHENA in the centre, subtle red + blue light behind it. -->
+    <Grid Grid.Row="0" x:Name="WordmarkZone" Background="#000000" ClipToBounds="True">
+      <!-- Soft glows: radial gradients fading to transparent. No BlurEffect (GPU cost), no flashing. -->
+      <Ellipse x:Name="BlueGlow" Width="560" Height="560"
+               HorizontalAlignment="Center" VerticalAlignment="Center"
+               Margin="-200,0,200,0" Opacity="0.16">
+        <Ellipse.Fill>
+          <RadialGradientBrush>
+            <GradientStop Color="#2E5AAC" Offset="0"/>
+            <GradientStop Color="#2E5AAC" Offset="0.45"/>
+            <GradientStop Color="#002E5AAC" Offset="1"/>
+          </RadialGradientBrush>
+        </Ellipse.Fill>
+      </Ellipse>
+      <Ellipse x:Name="RedGlow" Width="560" Height="560"
+               HorizontalAlignment="Center" VerticalAlignment="Center"
+               Margin="200,0,-200,0" Opacity="0.16">
+        <Ellipse.Fill>
+          <RadialGradientBrush>
+            <GradientStop Color="#A32E2E" Offset="0"/>
+            <GradientStop Color="#A32E2E" Offset="0.45"/>
+            <GradientStop Color="#00A32E2E" Offset="1"/>
+          </RadialGradientBrush>
+        </Ellipse.Fill>
+      </Ellipse>
 
-    <!-- Main area: sidebar + content -->
-    <Grid Grid.Row="1">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="200"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
+      <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+        <TextBlock x:Name="WordmarkText" Text="A T H E N A" FontFamily="Georgia"
+                   FontSize="72" FontWeight="Bold"
+                   Foreground="#EDEDE8" HorizontalAlignment="Center"
+                   MouseLeftButtonDown="WordmarkText_MouseLeftButtonDown"
+                   ToolTip="Click to return to the idle screen"/>
+        <TextBlock x:Name="StatusText" Text="Starting…" FontSize="11"
+                   Foreground="#8A8A85" HorizontalAlignment="Center"
+                   Margin="0,16,0,0"/>
+      </StackPanel>
 
-      <Border Grid.Column="0" Background="{StaticResource BrushPanel}"
-              BorderBrush="{StaticResource BrushGold}" BorderThickness="0,0,1,0">
-        <StackPanel x:Name="NavPanel" Margin="0,8,0,8">
-          <Button Tag="Dashboard" Content="Dashboard" Click="NavButton_Click"
-                  Background="Transparent"
-                  Foreground="{StaticResource BrushMuted}"
-                  FontSize="14" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  Padding="16,10,16,10" Margin="0,2,0,2"
-                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
-          <Button Tag="Chat" Content="Chat" Click="NavButton_Click"
-                  Background="Transparent"
-                  Foreground="{StaticResource BrushMuted}"
-                  FontSize="14" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  Padding="16,10,16,10" Margin="0,2,0,2"
-                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
-          <Button Tag="Conversations" Content="Conversations" Click="NavButton_Click"
-                  Background="Transparent"
-                  Foreground="{StaticResource BrushMuted}"
-                  FontSize="14" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  Padding="16,10,16,10" Margin="0,2,0,2"
-                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
-          <Button Tag="Memory Vault" Content="Memory Vault" Click="NavButton_Click"
-                  Background="Transparent"
-                  Foreground="{StaticResource BrushMuted}"
-                  FontSize="14" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  Padding="16,10,16,10" Margin="0,2,0,2"
-                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
-          <Button Tag="Tools" Content="Tools" Click="NavButton_Click"
-                  Background="Transparent"
-                  Foreground="{StaticResource BrushMuted}"
-                  FontSize="14" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  Padding="16,10,16,10" Margin="0,2,0,2"
-                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
-          <Button Tag="Devices" Content="Devices" Click="NavButton_Click"
-                  Background="Transparent"
-                  Foreground="{StaticResource BrushMuted}"
-                  FontSize="14" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  Padding="16,10,16,10" Margin="0,2,0,2"
-                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
-          <Button Tag="Activity" Content="Activity" Click="NavButton_Click"
-                  Background="Transparent"
-                  Foreground="{StaticResource BrushMuted}"
-                  FontSize="14" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  Padding="16,10,16,10" Margin="0,2,0,2"
-                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
-          <Button Tag="Settings" Content="Settings" Click="NavButton_Click"
-                  Background="Transparent"
-                  Foreground="{StaticResource BrushMuted}"
-                  FontSize="14" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  Padding="16,10,16,10" Margin="0,2,0,2"
-                  BorderThickness="3,0,0,0" BorderBrush="Transparent"/>
-        </StackPanel>
+      <!-- Minimal menu, top right. -->
+      <Button x:Name="MenuButton" Content="···" FontSize="20"
+              Background="Transparent" Foreground="#8A8A85"
+              BorderThickness="0" Padding="12,4"
+              HorizontalAlignment="Right" VerticalAlignment="Top"
+              Margin="8,8,8,0" Click="MenuButton_Click"
+              ToolTip="Menu — conversations, memory, tools, devices, activity, settings"/>
+    </Grid>
+
+    <!-- Conversation: the single ChatView, kept alive for the session. -->
+    <ContentControl Grid.Row="1" x:Name="ChatArea"/>
+
+    <!-- Overlay: minimal menu + the six sections, reusing the existing views. -->
+    <Grid x:Name="Overlay" Grid.RowSpan="2" Background="#CC000000"
+          Visibility="Collapsed" MouseLeftButtonDown="Overlay_MouseLeftButtonDown">
+      <Border HorizontalAlignment="Right" Width="420" Background="#0D0D0D"
+              BorderBrush="#D4AF37" BorderThickness="1,0,0,0">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+          </Grid.RowDefinitions>
+          <DockPanel Grid.Row="0" Margin="16,12">
+            <Button x:Name="OverlayBackButton" Content="‹ Menu"
+                    Padding="8,4" Margin="0,0,12,0" Visibility="Collapsed"
+                    Click="OverlayBackButton_Click"/>
+            <TextBlock x:Name="OverlayTitle" Text="Menu" FontFamily="Georgia"
+                       FontSize="18" FontWeight="Bold"
+                       Foreground="#D4AF37" VerticalAlignment="Center"/>
+            <Button Content="✕" Padding="8,4" HorizontalAlignment="Right"
+                    Click="CloseOverlay_Click"/>
+          </DockPanel>
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <ContentControl x:Name="OverlayContent" Margin="8,0,8,16"/>
+          </ScrollViewer>
+        </Grid>
       </Border>
-
-      <ContentControl Grid.Column="1" x:Name="ContentArea"/>
     </Grid>
   </Grid>
 </Window>

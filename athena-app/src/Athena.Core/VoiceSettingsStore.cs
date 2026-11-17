@@ -6,7 +6,7 @@ namespace Athena.Core;
 /// Persists VoiceSettings (N4) as plain JSON in a `voice.json`
 /// file inside a caller-supplied directory — the app passes
 /// %APPDATA%\Athena, next to the DPAPI config and island.json.
-/// Same pattern as IslandPositionStore: Load never throws (a
+/// Same pattern as the other small JSON stores: Load never throws (a
 /// missing or corrupt file returns null and the caller falls
 /// back to VoiceSettings.Defaults). Pure file I/O, no Windows
 /// dependency, so the harness can round-trip it in a temp

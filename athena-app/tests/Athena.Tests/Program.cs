@@ -219,67 +219,38 @@ var acts = await mockAct.GetDeviceActivityAsync("k");
 Check("data: activity parses", acts?.Actions.Length == 1);
 Check("data: activity approved", acts?.Actions[0].WasApproved == true);
 
-// ---------- N3: Island state machine ----------
-var machine = new IslandStateMachine();
-Eq("island: starts Idle", machine.Current.State, IslandState.Idle);
-Check("island: Chat can set Thinking",
-    machine.TrySet(IslandState.Thinking, IslandTriggerSource.Chat, "Thinking…"));
-Check("island: System cannot clear Thinking to Idle",
-    !machine.TrySet(IslandState.Idle, IslandTriggerSource.System, "Ready"));
-Check("island: Chat completes Thinking to Idle",
-    machine.TrySet(IslandState.Idle, IslandTriggerSource.Chat, "Idle"));
-Check("island: Chat cannot set Listening (needs voice, N4)",
-    !machine.TrySet(IslandState.Listening, IslandTriggerSource.Chat, "Listening"));
-Check("island: Voice can set Listening",
-    machine.TrySet(IslandState.Listening, IslandTriggerSource.Voice, "Listening"));
-Check("island: Chat cannot set Speaking",
-    !machine.TrySet(IslandState.Speaking, IslandTriggerSource.Chat, "Speaking"));
-Check("island: Chat cannot set Working (needs device, N5)",
-    !machine.TrySet(IslandState.Working, IslandTriggerSource.Chat, "Working"));
-Check("island: Device can set Working",
-    machine.TrySet(IslandState.Working, IslandTriggerSource.Device, "Working"));
-Check("island: Chat cannot set Approval",
-    !machine.TrySet(IslandState.Approval, IslandTriggerSource.Chat, "Approval"));
-Check("island: anyone can set Offline",
-    machine.TrySet(IslandState.Offline, IslandTriggerSource.System, "Offline"));
-Check("island: Offline clears to Idle",
-    machine.TrySet(IslandState.Idle, IslandTriggerSource.System, "Ready"));
-Check("island: same-state updates detail",
-    machine.TrySet(IslandState.Idle, IslandTriggerSource.System, "Ready again")
+// ---------- N3: Presence state machine (was the Island) ----------
+var machine = new PresenceStateMachine();
+Eq("presence: starts Idle", machine.Current.State, PresenceState.Idle);
+Check("presence: Chat can set Thinking",
+    machine.TrySet(PresenceState.Thinking, PresenceSource.Chat, "Thinking…"));
+Check("presence: System cannot clear Thinking to Idle",
+    !machine.TrySet(PresenceState.Idle, PresenceSource.System, "Ready"));
+Check("presence: Chat completes Thinking to Idle",
+    machine.TrySet(PresenceState.Idle, PresenceSource.Chat, "Idle"));
+Check("presence: Chat cannot set Listening (needs voice, N4)",
+    !machine.TrySet(PresenceState.Listening, PresenceSource.Chat, "Listening"));
+Check("presence: Voice can set Listening",
+    machine.TrySet(PresenceState.Listening, PresenceSource.Voice, "Listening"));
+Check("presence: Chat cannot set Speaking",
+    !machine.TrySet(PresenceState.Speaking, PresenceSource.Chat, "Speaking"));
+Check("presence: Chat cannot set Working (needs device, N5)",
+    !machine.TrySet(PresenceState.Working, PresenceSource.Chat, "Working"));
+Check("presence: Device can set Working",
+    machine.TrySet(PresenceState.Working, PresenceSource.Device, "Working"));
+Check("presence: Chat cannot set Approval",
+    !machine.TrySet(PresenceState.Approval, PresenceSource.Chat, "Approval"));
+Check("presence: anyone can set Offline",
+    machine.TrySet(PresenceState.Offline, PresenceSource.System, "Offline"));
+Check("presence: Offline clears to Idle",
+    machine.TrySet(PresenceState.Idle, PresenceSource.System, "Ready"));
+Check("presence: same-state updates detail",
+    machine.TrySet(PresenceState.Idle, PresenceSource.System, "Ready again")
     && machine.Current.Detail == "Ready again");
-Check("island: Error from Chat",
-    machine.TrySet(IslandState.Thinking, IslandTriggerSource.Chat, "Thinking…")
-    && machine.TrySet(IslandState.Error, IslandTriggerSource.Chat, "Failed"));
-Eq("island: Error state held", machine.Current.State, IslandState.Error);
-
-// ---------- N3: Island position maths ----------
-Eq("island pos: negative clamps to 0",
-    IslandPositionMath.Clamp(-50, -20, 240, 56, 1920, 1080), (0.0, 0.0));
-Eq("island pos: beyond right/bottom clamps inside",
-    IslandPositionMath.Clamp(1900, 1050, 240, 56, 1920, 1080), (1680.0, 1024.0));
-Eq("island pos: width overflow pins left to 0",
-    IslandPositionMath.Clamp(100, 100, 240, 56, 200, 100), (0.0, 44.0));
-Eq("island pos: tiny screen pins to 0,0",
-    IslandPositionMath.Clamp(100, 100, 240, 56, 200, 40), (0.0, 0.0));
-var defPos = IslandPositionMath.Default(1920, 1080, 240, 56);
-Eq("island pos: default bottom-right", (defPos.Left, defPos.Top), (1656.0, 1000.0));
-Check("island pos: default visible + on top", defPos.Visible && defPos.AlwaysOnTop);
-
-// ---------- N3: Island position store round-trip ----------
-var tmpIslandDir = Path.Combine(
-    Path.GetTempPath(), "athena-island-test-" + Guid.NewGuid().ToString("N"));
-Check("island store: missing file returns null",
-    IslandPositionStore.Load(tmpIslandDir) is null);
-IslandPositionStore.Save(tmpIslandDir,
-    new IslandPosition(123.5, 456.5, AlwaysOnTop: false, Visible: true));
-var loadedPos = IslandPositionStore.Load(tmpIslandDir);
-Check("island store: round-trip",
-    loadedPos is not null && loadedPos.Left == 123.5 && loadedPos.Top == 456.5
-    && !loadedPos.AlwaysOnTop && loadedPos.Visible);
-File.WriteAllText(Path.Combine(tmpIslandDir, "island.json"), "{ not json");
-Check("island store: corrupt file returns null",
-    IslandPositionStore.Load(tmpIslandDir) is null);
-Directory.Delete(tmpIslandDir, recursive: true);
+Check("presence: Error from Chat",
+    machine.TrySet(PresenceState.Thinking, PresenceSource.Chat, "Thinking…")
+    && machine.TrySet(PresenceState.Error, PresenceSource.Chat, "Failed"));
+Eq("presence: Error state held", machine.Current.State, PresenceState.Error);
 
 // ---------- N4: Voice selection policy ----------
 var fakeVoices = new[]
@@ -364,20 +335,20 @@ Check("voice settings: corrupt file returns null",
     VoiceSettingsStore.Load(tmpVoiceDir) is null);
 Directory.Delete(tmpVoiceDir, recursive: true);
 
-// ---------- N4: Voice-source Island transitions ----------
-var voiceMachine = new IslandStateMachine();
-Check("voice island: Voice can set Listening",
-    voiceMachine.TrySet(IslandState.Listening, IslandTriggerSource.Voice, "Listening…"));
-Check("voice island: Voice can set Speaking from Listening",
-    voiceMachine.TrySet(IslandState.Speaking, IslandTriggerSource.Voice, "Speaking…"));
-Check("voice island: Speaking returns to Idle",
-    voiceMachine.TrySet(IslandState.Idle, IslandTriggerSource.Voice, "Idle"));
-Check("voice island: Chat cannot set Speaking",
-    !voiceMachine.TrySet(IslandState.Speaking, IslandTriggerSource.Chat, "Speaking…"));
-Check("voice island: System cannot set Listening",
-    !voiceMachine.TrySet(IslandState.Listening, IslandTriggerSource.System, "Listening…"));
-Check("voice island: Voice can set Offline",
-    voiceMachine.TrySet(IslandState.Offline, IslandTriggerSource.Voice, "Offline"));
+// ---------- N4: Voice-source Presence transitions ----------
+var voiceMachine = new PresenceStateMachine();
+Check("voice presence: Voice can set Listening",
+    voiceMachine.TrySet(PresenceState.Listening, PresenceSource.Voice, "Listening…"));
+Check("voice presence: Voice can set Speaking from Listening",
+    voiceMachine.TrySet(PresenceState.Speaking, PresenceSource.Voice, "Speaking…"));
+Check("voice presence: Speaking returns to Idle",
+    voiceMachine.TrySet(PresenceState.Idle, PresenceSource.Voice, "Idle"));
+Check("voice presence: Chat cannot set Speaking",
+    !voiceMachine.TrySet(PresenceState.Speaking, PresenceSource.Chat, "Speaking…"));
+Check("voice presence: System cannot set Listening",
+    !voiceMachine.TrySet(PresenceState.Listening, PresenceSource.System, "Listening…"));
+Check("voice presence: Voice can set Offline",
+    voiceMachine.TrySet(PresenceState.Offline, PresenceSource.Voice, "Offline"));
 
 // ---------- Live backend (only with ATHENA_TEST_KEY) ----------
 var liveKey = Environment.GetEnvironmentVariable("ATHENA_TEST_KEY");
@@ -488,42 +459,53 @@ else
     Check("wpf: UseWPF is enabled",
         csprojText.Contains("<UseWPF>true</UseWPF>"));
 
-    // N2 shell structure (regression: navigation). appDir is in scope
-    // here because this block declares it above.
+    // Redesign (minimal black identity): no dashboard, no sidebar,
+    // no Island. The six sections live behind the "···" menu overlay.
     var shell = File.ReadAllText(Path.Combine(appDir, "MainWindow.xaml"));
-    foreach (var section in new[]
-        { "Dashboard", "Chat", "Conversations", "Memory Vault",
-          "Tools", "Devices", "Activity", "Settings" })
-        Check($"shell: nav section present ({section})",
-            shell.Contains($"Tag=\"{section}\""));
-    Check("shell: content area present", shell.Contains("x:Name=\"ContentArea\""));
+    Check("shell: black background", shell.Contains("Background=\"#000000\""));
+    Check("shell: wordmark present", shell.Contains("x:Name=\"WordmarkText\""));
+    Check("shell: blue glow present", shell.Contains("x:Name=\"BlueGlow\""));
+    Check("shell: red glow present", shell.Contains("x:Name=\"RedGlow\""));
+    Check("shell: menu button present", shell.Contains("x:Name=\"MenuButton\""));
+    Check("shell: overlay present", shell.Contains("x:Name=\"Overlay\""));
+    Check("shell: chat area present", shell.Contains("x:Name=\"ChatArea\""));
+    Check("shell: no old content area", !shell.Contains("x:Name=\"ContentArea\""));
+    Check("shell: no old nav panel", !shell.Contains("x:Name=\"NavPanel\""));
     foreach (var view in new[]
-        { "DashboardView", "ChatView", "ConversationsView", "MemoryVaultView",
+        { "ChatView", "ConversationsView", "MemoryVaultView",
           "ToolsView", "DevicesView", "ActivityView", "SettingsView" })
         Check($"shell: view exists ({view})",
             File.Exists(Path.Combine(appDir, "Views", view + ".xaml")) &&
             File.Exists(Path.Combine(appDir, "Views", view + ".xaml.cs")));
+    Check("redesign: DashboardView deleted",
+        !File.Exists(Path.Combine(appDir, "Views", "DashboardView.xaml")) &&
+        !File.Exists(Path.Combine(appDir, "Views", "DashboardView.xaml.cs")));
+    Check("redesign: IslandWindow deleted",
+        !File.Exists(Path.Combine(appDir, "IslandWindow.xaml")) &&
+        !File.Exists(Path.Combine(appDir, "IslandWindow.xaml.cs")));
 
-    // N3 Island wiring (structural: the window itself needs Windows).
-    Check("island: IslandWindow.xaml exists",
-        File.Exists(Path.Combine(appDir, "IslandWindow.xaml")));
-    Check("island: IslandWindow.xaml.cs exists",
-        File.Exists(Path.Combine(appDir, "IslandWindow.xaml.cs")));
+    // Presence wiring (structural: the window itself needs Windows).
     var chatViewCs = File.ReadAllText(Path.Combine(appDir, "Views", "ChatView.xaml.cs"));
-    Check("island: ChatView reports Thinking",
-        chatViewCs.Contains("SetIslandState(IslandState.Thinking"));
-    Check("island: ChatView reports Idle on reply",
-        chatViewCs.Contains("SetIslandState(IslandState.Idle"));
-    Check("island: ChatView reports Offline on failure",
-        chatViewCs.Contains("SetIslandState(IslandState.Offline"));
+    Check("presence: ChatView reports Thinking",
+        chatViewCs.Contains("SetPresenceState(PresenceState.Thinking"));
+    Check("presence: ChatView reports Idle on reply",
+        chatViewCs.Contains("SetPresenceState(PresenceState.Idle"));
+    Check("presence: ChatView reports Offline on failure",
+        chatViewCs.Contains("SetPresenceState(PresenceState.Offline"));
+    Check("presence: ChatView raises MessagesChanged",
+        chatViewCs.Contains("MessagesChanged"));
     var mainCs = File.ReadAllText(Path.Combine(appDir, "MainWindow.xaml.cs"));
-    Check("island: MainWindow creates the Island",
-        mainCs.Contains("new IslandWindow("));
-    Check("island: MainWindow saves position on close",
-        mainCs.Contains("SavePosition()"));
+    Check("redesign: MainWindow has no Island window",
+        !mainCs.Contains("IslandWindow") && !mainCs.Contains("SetIslandState"));
+    Check("redesign: MainWindow deletes the leftover island file",
+        mainCs.Contains("island.json"));
+    foreach (var section in new[]
+        { "Conversations", "Memory Vault", "Tools", "Devices", "Activity", "Settings" })
+        Check($"menu: section offered ({section})",
+            mainCs.Contains($"\"{section}\""));
     var settingsCs = File.ReadAllText(Path.Combine(appDir, "Views", "SettingsView.xaml.cs"));
-    Check("island: Settings can show the Island",
-        settingsCs.Contains("RequestShowIsland()"));
+    Check("redesign: Settings has no Island card",
+        !settingsCs.Contains("RequestShowIsland") && !settingsCs.Contains("Island"));
 
     // N4 voice wiring (structural: SAPI itself needs Windows).
     Check("voice: System.Speech referenced",

@@ -1,7 +1,7 @@
 namespace Athena.Core;
 
 /// <summary>
-/// The Dynamic Island's states (N3). The rule that makes them
+/// The presence light's states (N3). The rule that makes them
 /// honest: a state may only be entered by the event that actually
 /// produces it. Listening/Speaking come only from voice input/
 /// output (N4 — no producer exists yet, so they are unreachable
@@ -12,7 +12,7 @@ namespace Athena.Core;
 /// a caller asking for a state it cannot produce gets `false`
 /// and the displayed state does not change.
 /// </summary>
-public enum IslandState
+public enum PresenceState
 {
     Idle,
     Listening,
@@ -25,7 +25,7 @@ public enum IslandState
 }
 
 /// <summary>Who is reporting the state change — decides what is allowed.</summary>
-public enum IslandTriggerSource
+public enum PresenceSource
 {
     Chat,
     Voice,
@@ -33,10 +33,10 @@ public enum IslandTriggerSource
     System,
 }
 
-public sealed record IslandStatus(IslandState State, string Detail, DateTimeOffset UpdatedAt);
+public sealed record PresenceStatus(PresenceState State, string Detail, DateTimeOffset UpdatedAt);
 
 /// <summary>
-/// Pure state machine for the Island. No UI, no I/O — fully
+/// Pure state machine for the presence light. No UI, no I/O — fully
 /// testable on Linux. Transitions:
 /// - Idle: from anything except Thinking (only Chat completes a
 ///   Thinking turn; System must not clear it mid-request).
@@ -48,12 +48,12 @@ public sealed record IslandStatus(IslandState State, string Detail, DateTimeOffs
 /// - Same state: updates the detail text, returns true.
 /// Anything else returns false and leaves the state untouched.
 /// </summary>
-public sealed class IslandStateMachine
+public sealed class PresenceStateMachine
 {
-    public IslandStatus Current { get; private set; } =
-        new(IslandState.Idle, "Idle", DateTimeOffset.UtcNow);
+    public PresenceStatus Current { get; private set; } =
+        new(PresenceState.Idle, "Idle", DateTimeOffset.UtcNow);
 
-    public bool TrySet(IslandState next, IslandTriggerSource source, string detail)
+    public bool TrySet(PresenceState next, PresenceSource source, string detail)
     {
         if (next == Current.State)
         {
@@ -63,21 +63,21 @@ public sealed class IslandStateMachine
 
         var allowed = next switch
         {
-            IslandState.Idle =>
-                !(Current.State == IslandState.Thinking && source != IslandTriggerSource.Chat),
-            IslandState.Thinking => source == IslandTriggerSource.Chat,
-            IslandState.Listening => source == IslandTriggerSource.Voice,
-            IslandState.Speaking => source == IslandTriggerSource.Voice,
-            IslandState.Working => source == IslandTriggerSource.Device,
-            IslandState.Approval => source == IslandTriggerSource.Device,
-            IslandState.Offline => true,
-            IslandState.Error =>
-                source is IslandTriggerSource.Chat or IslandTriggerSource.System,
+            PresenceState.Idle =>
+                !(Current.State == PresenceState.Thinking && source != PresenceSource.Chat),
+            PresenceState.Thinking => source == PresenceSource.Chat,
+            PresenceState.Listening => source == PresenceSource.Voice,
+            PresenceState.Speaking => source == PresenceSource.Voice,
+            PresenceState.Working => source == PresenceSource.Device,
+            PresenceState.Approval => source == PresenceSource.Device,
+            PresenceState.Offline => true,
+            PresenceState.Error =>
+                source is PresenceSource.Chat or PresenceSource.System,
             _ => false,
         };
 
         if (!allowed) return false;
-        Current = new IslandStatus(next, detail, DateTimeOffset.UtcNow);
+        Current = new PresenceStatus(next, detail, DateTimeOffset.UtcNow);
         return true;
     }
 }

@@ -22,6 +22,12 @@ public partial class ChatView : UserControl, IRefreshable
     private bool _sending;
     private bool _voiceWired;
 
+    /// <summary>Raised whenever a real message bubble is added, so the shell can switch between the idle wordmark and the conversation view.</summary>
+    public event Action? MessagesChanged;
+
+    /// <summary>How many message bubbles are currently shown.</summary>
+    public int MessageCount => MessagesPanel.Children.Count;
+
     public ChatView(AppState state, Action<string, Color> setStatus)
     {
         _state = state;
@@ -148,9 +154,6 @@ public partial class ChatView : UserControl, IRefreshable
         ScrollToBottom();
     }
 
-    private void NewChatButton_Click(object sender, RoutedEventArgs e) =>
-        _state.NewConversation();
-
     private async void SendButton_Click(object sender, RoutedEventArgs e) =>
         await SendAsync();
 
@@ -170,7 +173,7 @@ public partial class ChatView : UserControl, IRefreshable
         if (!MessageValidation.IsValidUserMessage(text)) return;
         if (string.IsNullOrWhiteSpace(_state.ApiKey))
         {
-            AddSystemMessage("Set your site key first (button above).", isError: true);
+            AddSystemMessage("Set your site key first (menu (···) → Settings).", isError: true);
             return;
         }
 
@@ -181,15 +184,14 @@ public partial class ChatView : UserControl, IRefreshable
         ThinkingText.Visibility = Visibility.Visible;
         // N4: a new message interrupts any speech in progress.
         _state.Voice?.StopSpeaking();
-        _state.SetIslandState(IslandState.Thinking, IslandTriggerSource.Chat, "Thinking…");
+        _state.SetPresenceState(PresenceState.Thinking, PresenceSource.Chat, "Thinking…");
 
         try
         {
             var reply = await _state.Chat.SendMessageAsync(
                 text, _state.ApiKey, _state.ConversationId);
             AddMessage("ATHENA", reply, isUser: false);
-            _state.SetLastReply(reply);
-            _state.SetIslandState(IslandState.Idle, IslandTriggerSource.Chat, "Idle");
+            _state.SetPresenceState(PresenceState.Idle, PresenceSource.Chat, "Idle");
             // N4: read the reply aloud only when the user turned voice output on.
             if (_state.VoiceSettings.OutputEnabled)
                 _state.Voice?.Speak(reply);
@@ -197,21 +199,21 @@ public partial class ChatView : UserControl, IRefreshable
         catch (AthenaApiException ex)
         {
             AddSystemMessage(ex.Message, isError: true);
-            _state.SetIslandState(IslandState.Error, IslandTriggerSource.Chat, ex.Message);
+            _state.SetPresenceState(PresenceState.Error, PresenceSource.Chat, ex.Message);
         }
         catch (HttpRequestException)
         {
             AddSystemMessage(
                 "Couldn't reach ATHENA — check your connection and try again.",
                 isError: true);
-            _state.SetIslandState(IslandState.Offline, IslandTriggerSource.Chat, "Offline");
+            _state.SetPresenceState(PresenceState.Offline, PresenceSource.Chat, "Offline");
         }
         catch (TaskCanceledException)
         {
             AddSystemMessage(
                 "The request timed out. Your message was not answered — try again.",
                 isError: true);
-            _state.SetIslandState(IslandState.Offline, IslandTriggerSource.Chat, "Offline — timed out");
+            _state.SetPresenceState(PresenceState.Offline, PresenceSource.Chat, "Offline — timed out");
         }
         finally
         {
@@ -220,9 +222,9 @@ public partial class ChatView : UserControl, IRefreshable
             _sending = false;
             InputBox.Focus();
             // If an unexpected error escaped the catches above, never
-            // leave the Island stuck on Thinking.
-            if (_state.IslandStatus.State == IslandState.Thinking)
-                _state.SetIslandState(IslandState.Idle, IslandTriggerSource.Chat, "Idle");
+            // leave the presence stuck on Thinking.
+            if (_state.PresenceStatus.State == PresenceState.Thinking)
+                _state.SetPresenceState(PresenceState.Idle, PresenceSource.Chat, "Idle");
         }
     }
 
@@ -263,6 +265,7 @@ public partial class ChatView : UserControl, IRefreshable
         bubble.Child = stack;
         MessagesPanel.Children.Add(bubble);
         ScrollToBottom();
+        MessagesChanged?.Invoke();
     }
 
     public void AddSystemMessage(string text, bool isError)

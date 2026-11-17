@@ -1,12 +1,18 @@
-# ATHENA — Native Windows App (N1 shell + N2 Command Centre + N3 Dynamic Island + N4 Voice)
+# ATHENA — Native Windows App (minimal black identity + N4 Voice)
 
 A genuine, Chrome-free native Windows desktop app (C# + WPF, .NET 8)
 that chats with the existing ATHENA backend — the Cloudflare Worker
 that used to be VESPER. N1 built the minimal shell; N2 expanded it
-into the full Command Centre; N3 added the floating Dynamic
-Island; **N4 adds native voice**: female British speech output
-(SAPI, Hazel preferred) and microphone input, with the Island's
-Listening/Speaking states wired to real voice events. Companion
+into a Command Centre; N3 added a floating Dynamic Island; **N4
+added native voice**: female British speech output (SAPI, Hazel
+preferred) and microphone input. **The redesign replaces the
+Command Centre and the Island with a minimal black identity**: a
+pure black screen, the ATHENA wordmark in the centre with subtle
+red + blue light, a discreet status line, and a bottom message
+input. The six capability sections (Conversations, Memory Vault,
+Tools, Devices, Activity, Settings) are reachable from the "···"
+menu. The wordmark stays visible during conversations, smaller,
+at the top — click it to return to the idle screen. Companion
 integration and owner auth (N5) come later.
 
 ## What N1 is (and is not)
@@ -73,9 +79,11 @@ the Companion.
    the unsigned exe: "More info" → "Run anyway" — same as the
    Companion until a signing certificate is decided in N6).
 2. Paste the site key when asked, click "Validate & save".
-3. Chat. Enter sends. The status dot shows Connected / Offline /
-   key problems. Close the window to quit; nothing runs in the
-   background in N1 (no tray icon yet — that comes with the Island).
+3. Chat. Enter sends. The status line under the wordmark shows
+   Connected / Offline / key problems, and what ATHENA is doing
+   (Listening, Thinking, Speaking). Close the window to quit;
+   nothing runs in the background (no tray icon yet — that comes
+   with N6).
 
 ## Tests
 
@@ -107,11 +115,13 @@ the UI launch test belongs on the real laptop.
   user to check — nothing is ever auto-sent, and the mic is
   never on unless tapped. No wake-word, no background
   listening.
-- The Island shows only states real events produce; N4 wires
-  Listening/Speaking to real voice events. Working/Approval
-  still need Companion device activity (N5).
-- The Island shares the Centre's AppState, so it shows the same
-  conversation and backend — no second client, no second memory.
+- The wordmark lighting shows only states real events produce;
+  N4 wires Listening/Speaking to real voice events. Working/Approval
+  still need Companion device activity (N5). All glow changes are
+  slow fades (0.8–1.6s) — no flashing.
+- The wordmark and the chat share one AppState, so the menu sections
+  show the same conversation and backend — no second client, no
+  second memory.
 - No tray icon, no startup-on-boot, no notifications (N6). No
   device commands from this app yet — the Companion still owns
   those (N5).
@@ -124,7 +134,7 @@ the UI launch test belongs on the real laptop.
 ## What remains for N5
 
 Companion integration + owner authentication: device status,
-approvals and activity inside the Centre and Island, DPAPI
+approvals and activity inside the menu sections, DPAPI
 protection for device credentials, and per-user login to
 replace the shared site key. Family access waits until after
 that.

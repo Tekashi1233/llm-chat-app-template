@@ -18,43 +18,30 @@ public sealed class AppState
 
     public event Action? ConversationChanged;
 
-    // ----- Dynamic Island (N3) -----
+    // ----- Presence (was the N3 Dynamic Island) -----
     // One state machine for the whole app: ChatView reports
     // Thinking/Idle/Error/Offline from real chat events,
-    // MainWindow reports connection changes, and the Island
-    // window renders whatever the machine holds. Nothing else
-    // may set a state — the machine rejects producers it does
-    // not recognise (Listening/Speaking need voice in N4,
-    // Working/Approval need device activity in N5).
-    private readonly IslandStateMachine _island = new();
+    // MainWindow reports connection changes, and the voice service
+    // reports Listening/Speaking from real voice events. The
+    // MainWindow's wordmark lighting follows whatever the machine
+    // holds. Nothing else may set a state — the machine rejects
+    // producers it does not recognise (Working/Approval need
+    // device activity in N5).
+    private readonly PresenceStateMachine _presence = new();
 
-    public IslandStatus IslandStatus => _island.Current;
+    public PresenceStatus PresenceStatus => _presence.Current;
 
-    public event Action<IslandStatus>? IslandStateChanged;
+    public event Action<PresenceStatus>? PresenceChanged;
 
-    /// <summary>Ask the machine for a new Island state; returns false when the caller may not produce it.</summary>
-    public bool SetIslandState(IslandState state, IslandTriggerSource source, string detail)
+    /// <summary>Ask the machine for a new presence state; returns false when the caller may not produce it.</summary>
+    public bool SetPresenceState(PresenceState state, PresenceSource source, string detail)
     {
-        var before = _island.Current;
-        if (!_island.TrySet(state, source, detail)) return false;
-        if (_island.Current != before)
-            IslandStateChanged?.Invoke(_island.Current);
+        var before = _presence.Current;
+        if (!_presence.TrySet(state, source, detail)) return false;
+        if (_presence.Current != before)
+            PresenceChanged?.Invoke(_presence.Current);
         return true;
     }
-
-    /// <summary>Latest assistant reply, one line, for the Island's expanded view. Set by ChatView on each reply.</summary>
-    public string? LastReplySnippet { get; private set; }
-
-    public void SetLastReply(string reply)
-    {
-        var oneLine = reply.Replace('\n', ' ').Replace('\r', ' ').Trim();
-        LastReplySnippet = oneLine.Length > 160 ? oneLine[..157] + "…" : oneLine;
-    }
-
-    /// <summary>Raised when a view asks for the Island to be shown again (Settings → Show the floating Island).</summary>
-    public event Action? ShowIslandRequested;
-
-    public void RequestShowIsland() => ShowIslandRequested?.Invoke();
 
     // ----- Voice (N4) -----
     // The service is created by MainWindow (it needs the UI thread
