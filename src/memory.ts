@@ -146,9 +146,17 @@ const MAX_TOPIC_CHARS = 80;
 const MAX_PROJECT_CHARS = 40;
 const RECALL_LIMIT = 8;
 // Safety cap on rows the recall query may return. Matching happens
-// in SQL (keyword LIKE on topic/fact/project), so old memories are
-// found no matter how many newer ones exist — this cap is only a
-// guard against a pathological query, not a recency window.
+// in SQL (keyword LIKE on topic/fact/project), so in normal use an
+// old memory is found no matter how many newer ones exist —
+// relevance is not recency-gated. But the cap is real: the query is
+// ORDER BY updated_at DESC LIMIT 200, so when more than 200 active
+// memories match the query words, only the 200 most recently
+// updated are considered and older matches are silently excluded.
+// Trade-off: the cap bounds the D1 read and the prompt size (only
+// 8 memories are ever injected), and 200 is far above any
+// realistic memory count; raising or removing it would cost a
+// larger read and more tokens on every chat turn, for a case that
+// only bites with a very large memory store.
 const RECALL_ROW_CAP = 200;
 // At most this many query words go into the SQL pre-filter.
 const MAX_QUERY_WORDS = 10;
@@ -240,9 +248,11 @@ export function buildModelMessages(
 /**
  * Builds the recall query: active memories for the conversation
  * whose topic, fact or project contains at least one query word.
- * Matching happens in SQL, so a relevant memory is found no matter
- * how old it is or how many newer memories exist — there is no
- * recency window that can silently exclude it. The returned rows
+ * Matching happens in SQL, so relevance is not recency-gated in
+ * the normal case — but the query is ORDER BY updated_at DESC
+ * LIMIT RECALL_ROW_CAP (200), so when more than 200 active
+ * memories match, only the 200 most recently updated are
+ * considered and older matches are excluded. The returned rows
  * are then ranked in code and capped at RECALL_LIMIT.
  * Pure function, exported for testing.
  */
@@ -397,17 +407,39 @@ export async function storeMemory(
 		if (existing) {
 			if (existing.fact.trim().toLowerCase() === fact.toLowerCase()) {
 				// Same fact again: no duplicate, just refresh the date.
-				await env.DB.prepare(
-					"UPDATE memories SET updated_at = ?1 WHERE id = ?2",
+				// The refresh only touches an ACTIVE row: if a
+				// concurrent replacement superseded this row after
+				// the lookup above, the UPDATE affects zero rows —
+				// and that must not be reported as a successful
+				// refresh of a superseded row. On zero rows, re-read
+				// the actual active state and report what is really
+				// there, exactly like the replacement path does.
+				const refresh = await env.DB.prepare(
+					"UPDATE memories SET updated_at = ?1 WHERE id = ?2 AND status = 'active'",
 				)
 					.bind(now, existing.id)
 					.run();
-				return JSON.stringify({
-					stored: false,
-					already_remembered: true,
-					topic,
-					note: "That was already remembered, so nothing changed.",
-				});
+				if (Number(refresh?.meta?.changes ?? 0) === 1) {
+					return JSON.stringify({
+						stored: false,
+						already_remembered: true,
+						topic,
+						note: "That was already remembered, so nothing changed.",
+					});
+				}
+				console.error(
+					"Memory refresh updated zero rows; re-reading actual state.",
+				);
+				return JSON.stringify(
+					await verifyRefresh(
+						env,
+						conversationId,
+						kind,
+						topic,
+						project,
+						fact,
+					),
+				);
 			}
 			// A different fact for the same topic: replace it
 			// atomically. The supersede and the insert run in ONE
@@ -557,6 +589,68 @@ export async function readActiveMemories(
 		console.error("Failed to re-read memories:", error);
 		return null;
 	}
+}
+
+/**
+ * Re-reads the active memories for a topic after a same-fact
+ * refresh updated zero rows, and reports the actual state, so the
+ * model never claims a successful refresh of a row that was
+ * superseded in the meantime. Returns the object storeMemory hands
+ * back to the model.
+ */
+export async function verifyRefresh(
+	env: Env,
+	conversationId: string,
+	kind: string,
+	topic: string,
+	project: string | null,
+	fact: string,
+): Promise<Record<string, unknown>> {
+	const actual = await readActiveMemories(
+		env,
+		conversationId,
+		kind,
+		topic,
+		project,
+	);
+	if (actual === null) {
+		return {
+			error:
+				"Could not verify whether that memory is still stored. Please check what is remembered before relying on it.",
+		};
+	}
+	if (
+		actual.length === 1 &&
+		actual[0].fact.trim().toLowerCase() === fact.toLowerCase()
+	) {
+		// The same fact is still the active memory (for example a
+		// concurrent write stored it again). It is remembered; the
+		// timestamp refresh is not what matters.
+		return {
+			stored: false,
+			already_remembered: true,
+			topic,
+			note: "That was already remembered, so nothing changed.",
+		};
+	}
+	if (actual.length === 1) {
+		// A concurrent replacement won: a different fact is active now.
+		return {
+			error: `That memory changed at the same time: the stored memory for this topic is now: ${actual[0].fact}`,
+		};
+	}
+	if (actual.length === 0) {
+		return {
+			error:
+				"That memory is no longer stored. Please tell me the fact again so I can store it.",
+		};
+	}
+	// Two or more active rows: the invariant broke. The partial
+	// unique index should make this impossible; report it plainly
+	// instead of claiming success.
+	return {
+		error: `Could not verify the memory for "${topic}": ${actual.length} active memories exist for this topic. Please ask what is remembered and correct it.`,
+	};
 }
 
 /**
