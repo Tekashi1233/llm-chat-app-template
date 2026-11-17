@@ -17,6 +17,7 @@
 
 import type { Env } from "./types";
 import { getActionHistory, getDeviceStatus, runDeviceCommand } from "./devices";
+import { storeMemory } from "./memory";
 
 export const TOOL_NAMES = [
 	"get_weather",
@@ -31,6 +32,7 @@ export const TOOL_NAMES = [
 	"read_file",
 	"run_command",
 	"get_action_history",
+	"remember_fact",
 ] as const;
 
 /**
@@ -289,17 +291,61 @@ export const TOOL_DEFINITIONS: FunctionTool[] = [
 			},
 		},
 	},
+	{
+		type: "function",
+		function: {
+			name: "remember_fact",
+			description:
+				"Remember something durable about the user for later conversations in this browser: a fact, a preference, an important project fact, or an ongoing plan. Use it ONLY when the user explicitly asks you to remember something ('remember that...'), or states a durable preference, an important fact about one of their projects, or an ongoing plan. Never store casual conversation, one-off questions, temporary details, credentials, or sensitive personal information. The memory is kept for this browser conversation only and is recalled automatically later.",
+			parameters: {
+				type: "object",
+				properties: {
+					kind: {
+						type: "string",
+						enum: ["fact", "preference", "project", "plan"],
+						description:
+							"What kind of memory this is: fact, preference, project (a fact about a project), or plan.",
+					},
+					topic: {
+						type: "string",
+						description:
+							"A short label for the memory, e.g. 'favourite colour' or 'RankForge AdSense status'.",
+					},
+					fact: {
+						type: "string",
+						description:
+							"The fact itself in one or two plain sentences, e.g. 'My favourite colour is teal.'",
+					},
+					project: {
+						type: "string",
+						description:
+							"Which project this belongs to, if any: rankforge, untold-history, vesper, university, esp32, or personal. Leave it out when it is not about a project.",
+					},
+					source: {
+						type: "string",
+						enum: ["user", "inferred"],
+						description:
+							"'user' when the user said it directly, 'inferred' when you worked it out from what they said.",
+					},
+				},
+				required: ["topic", "fact"],
+			},
+		},
+	},
 ];
 
 /**
  * Runs one tool by name with parsed JSON arguments.
  * Returns a short JSON string for the model. Never throws.
  * `env` is needed by tools that read D1 (get_device_status).
+ * `conversationId` scopes remember_fact to this browser's
+ * conversation — memories never leak to another browser or device.
  */
 export async function executeTool(
 	name: string,
 	args: Record<string, unknown>,
 	env?: Env,
+	conversationId?: string,
 ): Promise<string> {
 	try {
 		switch (name) {
@@ -344,6 +390,13 @@ export async function executeTool(
 					});
 				}
 				return await getActionHistory(env);
+			case "remember_fact":
+				if (!env || !conversationId) {
+					return JSON.stringify({
+						error: "Memory storage is unavailable.",
+					});
+				}
+				return await storeMemory(env, conversationId, args);
 			default:
 				return JSON.stringify({ error: `Unknown tool: ${name}` });
 		}

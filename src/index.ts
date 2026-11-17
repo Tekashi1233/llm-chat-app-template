@@ -11,6 +11,11 @@ import { Env, ChatMessage } from "./types";
 import { TOOL_DEFINITIONS, TOOL_NAMES, executeTool } from "./tools";
 import { handleDevicesRequest } from "./devices";
 import {
+	formatMemoriesForPrompt,
+	loadMemories,
+	redactCredentials,
+} from "./memory";
+import {
 	checkAuth,
 	checkRateLimit,
 	RATE_LIMITS,
@@ -45,6 +50,28 @@ Behaviour:
 - Never claim to have performed an action you haven't performed.
 - You can see earlier messages from this conversation; use them when
   relevant instead of asking the user to repeat things.
+
+Long-term memory (P2):
+- You remember durable things about the user across conversations
+  in this browser: facts, preferences, important project facts and
+  ongoing plans. What you remember is shown to you before each
+  answer, with when it was recorded and whether they told you
+  directly or you inferred it.
+- Be conservative about what you store. Use the remember_fact tool
+  only when the user explicitly asks you to remember something
+  ("remember that..."), or when they state a durable preference, an
+  important fact about one of their projects, or an ongoing plan.
+  Never store casual conversation, one-off questions, temporary
+  details, credentials, or sensitive personal information (health
+  details, passwords, keys, financial information). When you store
+  something, say so briefly so the user knows.
+- Your memory belongs to this browser conversation only. It does
+  not carry to other browsers, incognito windows, or devices, and
+  a cleared browser starts with no memory. Say so plainly if the
+  user asks why you do not remember something from another device.
+- When the user asks what you remember, answer from the list you
+  were given: say what each memory is, when it was recorded, and
+  whether they told you directly or you inferred it.
 
 Tools:
 - You have tools: get_weather (current weather for any city),
@@ -338,11 +365,23 @@ async function handleChatRequest(
 		// Load recent conversation history from D1 memory
 		const history = await loadHistory(env, conversation_id);
 
+		// Load long-term memories relevant to the latest user message.
+		// Scoped to this conversation_id: memories never leak to
+		// another browser or device.
+		const latestUserText = [...messages]
+			.reverse()
+			.find((msg) => msg.role === "user")?.content ?? "";
+		const memories = await loadMemories(env, conversation_id, latestUserText);
+		const memoryBlock = formatMemoriesForPrompt(memories);
+
 		// Build the messages the model sees: system prompt, remembered
 		// history, then the new message(s) from this request
 		const modelMessages: ChatMessage[] = [];
 		if (!messages.some((msg) => msg.role === "system")) {
-			modelMessages.push({ role: "system", content: SYSTEM_PROMPT });
+			modelMessages.push({
+				role: "system",
+				content: SYSTEM_PROMPT + memoryBlock,
+			});
 		}
 		modelMessages.push(...history);
 		modelMessages.push(...messages);
@@ -392,7 +431,12 @@ async function handleChatRequest(
 				} catch {
 					args = {};
 				}
-				const result = await executeTool(call.function.name, args, env);
+				const result = await executeTool(
+					call.function.name,
+					args,
+					env,
+					conversation_id,
+				);
 				toolMessages.push({
 					role: "tool",
 					content: result,
@@ -579,6 +623,10 @@ async function loadHistory(
 
 /**
  * Saves the new user message(s) and the streamed assistant reply to D1.
+ * Before anything is written, credential-looking values are redacted
+ * (passwords, keys, tokens, secrets become [redacted]) so a secret
+ * the user pastes can never sit in the messages table. The reply the
+ * user sees live is not changed — only the stored copy is redacted.
  */
 async function saveConversation(
 	env: Env,
@@ -594,14 +642,14 @@ async function saveConversation(
 		await env.DB.prepare(
 			"INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
 		)
-			.bind(conversationId, msg.role, msg.content, now)
+			.bind(conversationId, msg.role, redactCredentials(msg.content), now)
 			.run();
 	}
 	if (reply) {
 		await env.DB.prepare(
 			"INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
 		)
-			.bind(conversationId, "assistant", reply, Date.now())
+			.bind(conversationId, "assistant", redactCredentials(reply), Date.now())
 			.run();
 	}
 }
