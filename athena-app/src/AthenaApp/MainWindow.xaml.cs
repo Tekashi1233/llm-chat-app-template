@@ -17,12 +17,14 @@ namespace Athena;
 /// ring and a glowing blue-white core — with subtle red + blue
 /// light behind it and a discreet status line. The reactor lights
 /// up bright when ATHENA replies, pulses gently while she thinks,
-/// and rests dim when idle. No dashboard, no sidebar, no floating
-/// Island (N3 is cancelled). The six capability sections
-/// (Conversations, Memory Vault, Tools, Devices, Activity,
-/// Settings) live behind the "···" menu as an overlay, reusing the
-/// existing views. The reactor stays visible during conversations,
-/// smaller, at the top — clicking it returns to the idle screen.
+/// and rests dim when idle. The title bar and the chat surfaces
+/// are frosted glass (translucent fills, light edges) over the
+/// black. No dashboard, no sidebar, no floating Island (N3 is
+/// cancelled). The six capability sections (Conversations, Memory
+/// Vault, Tools, Devices, Activity, Settings) live behind the
+/// "···" menu as an overlay, reusing the existing views. The
+/// reactor stays visible during conversations, smaller, at the
+/// top — clicking it returns to the idle screen.
 /// The reactor lighting follows the presence machine: only states
 /// real events produce ever light up. All glow changes are slow
 /// (0.8–1.6s) fades — no flashing.
@@ -431,6 +433,21 @@ public partial class MainWindow : Window
         _glowTimer.Stop();
         _glowTimer = null;
     }
+
+    // ----- Glass title bar (custom chrome) -----
+    // Dragging and double-click-to-maximize are handled by the OS
+    // caption (WindowChrome CaptionHeight 34); these are only the
+    // three caption buttons.
+
+    private void MinimizeButton_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState.Minimized;
+
+    private void MaximizeButton_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized
+            ? WindowState.Normal
+            : WindowState.Maximized;
+
+    private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
 
     // ----- Minimal menu + overlay sections -----
 

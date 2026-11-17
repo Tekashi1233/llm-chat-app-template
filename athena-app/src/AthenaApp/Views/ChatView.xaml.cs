@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using Athena.Core;
 
@@ -237,22 +238,29 @@ public partial class ChatView : UserControl, IRefreshable
     {
         var left = isUser ? 80d : 0d;
         var right = isUser ? 0d : 80d;
-        // Transparent bubbles: the text sits straight on the black
-        // background with only a thin border, so a reply can never
-        // hide inside a dark panel again.
+        // Frosted glass bubbles: a translucent gradient fill with
+        // a thin bright edge and a soft shadow, so a reply can
+        // never hide inside a flat dark panel again.
         var bubble = new Border
         {
-            Background = Brushes.Transparent,
+            Background = (Brush)FindResource("BrushGlassFill"),
             BorderBrush = isUser
-                ? new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A))
-                : (Brush)FindResource("BrushGold"),
+                ? (Brush)FindResource("BrushGlassBorder")
+                : (Brush)FindResource("BrushGlassGoldBorder"),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
+            CornerRadius = new CornerRadius(10),
             Padding = new Thickness(12, 8, 12, 8),
             Margin = new Thickness(left, 6, right, 6),
             HorizontalAlignment = isUser
                 ? HorizontalAlignment.Right
                 : HorizontalAlignment.Left,
+            Effect = new DropShadowEffect
+            {
+                Color = Colors.Black,
+                BlurRadius = 12,
+                ShadowDepth = 2,
+                Opacity = 0.35,
+            },
         };
         var stack = new StackPanel();
         stack.Children.Add(new TextBlock

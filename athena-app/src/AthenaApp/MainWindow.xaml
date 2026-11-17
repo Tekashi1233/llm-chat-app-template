@@ -1,18 +1,62 @@
 <Window x:Class="Athena.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="ATHENA" Height="700" Width="1100"
         MinHeight="560" MinWidth="900"
         Background="#000000"
+        WindowStyle="None"
         Icon="icon.png">
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="34" CornerRadius="0"
+                        GlassFrameThickness="0" ResizeBorderThickness="6"/>
+  </shell:WindowChrome.WindowChrome>
   <Grid x:Name="RootGrid">
     <Grid.RowDefinitions>
+      <RowDefinition Height="34"/>
       <RowDefinition x:Name="WordmarkRow" Height="*"/>
       <RowDefinition x:Name="ChatRow" Height="Auto"/>
     </Grid.RowDefinitions>
 
+    <!-- Glass title bar (custom chrome): icon + ATHENA on the left,
+         minimize / maximize / close on the right. Dragging and
+         double-click-to-maximize are handled by the OS caption
+         (CaptionHeight 34); the buttons are hit-test visible in
+         the chrome so they stay clickable. -->
+    <Grid Grid.Row="0" Background="{StaticResource BrushGlassFill}">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <Image Source="icon.png" Width="16" Height="16" Margin="12,0,8,0"
+             VerticalAlignment="Center"/>
+      <TextBlock Grid.Column="1" Text="A T H E N A" FontFamily="Georgia"
+                 FontSize="13" FontWeight="Bold" Foreground="#EDEDE8"
+                 VerticalAlignment="Center"/>
+      <Button Grid.Column="2" Content="—" Click="MinimizeButton_Click"
+              shell:WindowChrome.IsHitTestVisibleInChrome="True"
+              Background="Transparent" Foreground="#9A9890"
+              BorderThickness="0" Padding="0" Width="46" Height="34"
+              FontSize="13" ToolTip="Minimize"/>
+      <Button Grid.Column="3" Content="▢" Click="MaximizeButton_Click"
+              shell:WindowChrome.IsHitTestVisibleInChrome="True"
+              Background="Transparent" Foreground="#9A9890"
+              BorderThickness="0" Padding="0" Width="46" Height="34"
+              FontSize="13" ToolTip="Maximize"/>
+      <Button Grid.Column="4" Content="✕" Click="CloseButton_Click"
+              shell:WindowChrome.IsHitTestVisibleInChrome="True"
+              Background="Transparent" Foreground="#E88A8A"
+              BorderThickness="0" Padding="0" Width="46" Height="34"
+              FontSize="13" ToolTip="Close"/>
+      <Border Grid.ColumnSpan="5" BorderBrush="#33FFFFFF"
+              BorderThickness="0,0,0,1" VerticalAlignment="Bottom"/>
+    </Grid>
+
     <!-- Wordmark zone: pure black, ATHENA in the centre, subtle red + blue light behind it. -->
-    <Grid Grid.Row="0" x:Name="WordmarkZone" Background="#000000" ClipToBounds="True">
+    <Grid Grid.Row="1" x:Name="WordmarkZone" Background="#000000" ClipToBounds="True">
       <!-- Soft glows: radial gradients fading to transparent. No BlurEffect (GPU cost), no flashing. -->
       <Ellipse x:Name="BlueGlow" Width="560" Height="560"
                HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -95,12 +139,12 @@
     </Grid>
 
     <!-- Conversation: the single ChatView, kept alive for the session. -->
-    <ContentControl Grid.Row="1" x:Name="ChatArea"/>
+    <ContentControl Grid.Row="2" x:Name="ChatArea"/>
 
     <!-- Overlay: minimal menu + the six sections, reusing the existing views. -->
-    <Grid x:Name="Overlay" Grid.RowSpan="2" Background="#CC000000"
+    <Grid x:Name="Overlay" Grid.RowSpan="3" Background="#CC000000"
           Visibility="Collapsed" MouseLeftButtonDown="Overlay_MouseLeftButtonDown">
-      <Border HorizontalAlignment="Right" Width="420" Background="#0D0D0D"
+      <Border HorizontalAlignment="Right" Width="420" Background="{StaticResource BrushGlassFill}"
               BorderBrush="#D4AF37" BorderThickness="1,0,0,0">
         <Grid>
           <Grid.RowDefinitions>

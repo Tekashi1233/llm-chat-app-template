@@ -519,12 +519,27 @@ else
         mainCs.Contains("FlashReactor") && mainCs.Contains("ReplyReceived"));
     Check("reactor: MainWindow sizes the reactor",
         mainCs.Contains("AnimateReactorSize(260)") && mainCs.Contains("AnimateReactorSize(84)"));
-    Check("chat: bubbles are transparent",
-        chatViewCs.Contains("Background = Brushes.Transparent"));
+    Check("chat: bubbles are glass",
+        chatViewCs.Contains("FindResource(\"BrushGlassFill\")"));
     Check("chat: scroll waits for layout",
         chatViewCs.Contains("Dispatcher.BeginInvoke") && chatViewCs.Contains("ScrollToEnd"));
     Check("chat: ReplyReceived event raised",
         chatViewCs.Contains("ReplyReceived?.Invoke()"));
+
+    // Frosted glass (structural).
+    var appXaml = File.ReadAllText(Path.Combine(appDir, "App.xaml"));
+    Check("glass: glass brushes exist",
+        appXaml.Contains("x:Key=\"BrushGlassFill\"") && appXaml.Contains("x:Key=\"BrushGlassBorder\""));
+    Check("glass: custom title bar present",
+        shell.Contains("MinimizeButton_Click") && shell.Contains("MaximizeButton_Click")
+        && shell.Contains("CloseButton_Click"));
+    Check("glass: caption buttons hit-test visible in chrome",
+        shell.Contains("IsHitTestVisibleInChrome"));
+    Check("glass: title bar uses WindowChrome",
+        shell.Contains("WindowChrome"));
+    var chatXaml = File.ReadAllText(Path.Combine(appDir, "Views", "ChatView.xaml"));
+    Check("glass: input bar is glass",
+        chatXaml.Contains("BrushGlassFill"));
 
     // N4 voice wiring (structural: SAPI itself needs Windows).
     Check("voice: System.Speech referenced",

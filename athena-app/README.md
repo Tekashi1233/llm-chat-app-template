@@ -12,10 +12,11 @@ a pure black screen, ATHENA as an **arc reactor** in the centre
 with subtle red + blue light behind it, a discreet status line,
 and a bottom message input. The reactor lights up bright the
 moment ATHENA replies, pulses gently while she thinks, and rests
-dim when idle. The chat itself is transparent — message bubbles
-and the input bar have no filled background, so replies sit
-straight on the black with only a thin border. The six capability
-sections (Conversations, Memory Vault, Tools, Devices, Activity,
+dim when idle. The title bar is custom glass chrome (drag it to
+move the window; the — / ▢ / ✕ buttons work as usual), and the
+chat surfaces are frosted glass — message bubbles and the input
+bar have translucent gradient fills, light edges and soft shadows
+over the black. The six capability sections (Conversations, Memory Vault, Tools, Devices, Activity,
 Settings) are reachable from the "···" menu. The reactor stays
 visible during conversations, smaller, at the top — click it to
 return to the idle screen. Companion integration and owner auth

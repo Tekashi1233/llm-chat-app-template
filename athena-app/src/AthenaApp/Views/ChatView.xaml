@@ -27,10 +27,10 @@
                  Margin="16,0,0,0" Visibility="Collapsed"/>
     </StackPanel>
 
-    <!-- Input bar -->
-    <Border Grid.Row="2" Background="Transparent"
-            BorderBrush="#2A2A2A" BorderThickness="0,1,0,0"
-            Padding="16,12">
+    <!-- Input bar: frosted glass panel. -->
+    <Border Grid.Row="2" Background="{StaticResource BrushGlassFill}"
+            BorderBrush="{StaticResource BrushGlassBorder}" BorderThickness="1"
+            CornerRadius="10" Margin="16,0,16,12" Padding="12,8">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*"/>
@@ -39,6 +39,7 @@
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <TextBox x:Name="InputBox" Grid.Column="0" Margin="0,0,12,0"
+                 Background="Transparent" BorderThickness="0"
                  KeyDown="InputBox_KeyDown"/>
         <Button x:Name="MicButton" Grid.Column="1" Content="Mic"
                 Margin="0,0,8,0" Padding="10,4" IsEnabled="False"

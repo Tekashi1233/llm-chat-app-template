@@ -13,6 +13,16 @@
     <SolidColorBrush x:Key="BrushMuted" Color="#9A9890"/>
     <SolidColorBrush x:Key="BrushUserBubble" Color="#2A2416"/>
     <SolidColorBrush x:Key="BrushError" Color="#7A2E2E"/>
+    <!-- Frosted glass: translucent fills + light edges over black.
+         Panels using these read as smoked glass; the fill is light
+         at the top and darker at the bottom, with a thin bright edge. -->
+    <LinearGradientBrush x:Key="BrushGlassFill" StartPoint="0,0" EndPoint="0,1">
+      <GradientStop Color="#33FFFFFF" Offset="0"/>
+      <GradientStop Color="#1FFFFFFF" Offset="0.5"/>
+      <GradientStop Color="#0DFFFFFF" Offset="1"/>
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="BrushGlassBorder" Color="#59FFFFFF"/>
+    <SolidColorBrush x:Key="BrushGlassGoldBorder" Color="#80D4AF37"/>
     <Style TargetType="Button">
       <Setter Property="Background" Value="#D4AF37"/>
       <Setter Property="Foreground" Value="#0E0F11"/>
