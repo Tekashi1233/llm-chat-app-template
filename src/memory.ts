@@ -129,6 +129,13 @@ const MAX_FACT_CHARS = 500;
 const MAX_TOPIC_CHARS = 80;
 const MAX_PROJECT_CHARS = 40;
 const RECALL_LIMIT = 8;
+// Safety cap on rows the recall query may return. Matching happens
+// in SQL (keyword LIKE on topic/fact/project), so old memories are
+// found no matter how many newer ones exist — this cap is only a
+// guard against a pathological query, not a recency window.
+const RECALL_ROW_CAP = 200;
+// At most this many query words go into the SQL pre-filter.
+const MAX_QUERY_WORDS = 10;
 
 /** Words too common to score on when matching a question to memories. */
 const STOPWORDS = new Set([
@@ -176,11 +183,43 @@ function toMemory(row: MemoryRow, conversationId: string): Memory {
 }
 
 /**
+ * Builds the recall query: active memories for the conversation
+ * whose topic, fact or project contains at least one query word.
+ * Matching happens in SQL, so a relevant memory is found no matter
+ * how old it is or how many newer memories exist — there is no
+ * recency window that can silently exclude it. The returned rows
+ * are then ranked in code and capped at RECALL_LIMIT.
+ * Pure function, exported for testing.
+ */
+export function buildRecallQuery(queryWords: string[]): {
+	sql: string;
+	params: string[];
+} {
+	const words = queryWords.slice(0, MAX_QUERY_WORDS);
+	const params = words.map((word) => `%${word}%`);
+	// ?1 is the conversation id; ?2.. are one LIKE pattern per word,
+	// each reused across topic, fact and project.
+	const clauses = words.map(
+		(_, i) =>
+			`(lower(topic) LIKE ?${i + 2} OR lower(fact) LIKE ?${i + 2} OR lower(project) LIKE ?${i + 2})`,
+	);
+	const sql =
+		"SELECT id, kind, topic, fact, project, source, created_at, updated_at, superseded_by, status FROM memories " +
+		"WHERE conversation_id = ?1 AND status = 'active' AND (" +
+		clauses.join(" OR ") +
+		") ORDER BY updated_at DESC LIMIT " +
+		RECALL_ROW_CAP;
+	return { sql, params };
+}
+
+/**
  * Loads the memories most relevant to the user's current message.
  * Keyword overlap on the topic counts most, then the fact text,
  * then a project-name match; ties break by recency. Returns at
- * most RECALL_LIMIT memories. Never throws: on any failure it
- * returns [] and chat continues without long-term memory.
+ * most RECALL_LIMIT memories. Returns [] when nothing matches —
+ * an unrelated memory is never injected into the prompt. Never
+ * throws: on any failure it returns [] and chat continues without
+ * long-term memory.
  */
 export async function loadMemories(
 	env: Env,
@@ -189,20 +228,16 @@ export async function loadMemories(
 ): Promise<Memory[]> {
 	try {
 		if (!env.DB) return [];
-		const rows = await env.DB.prepare(
-			"SELECT id, kind, topic, fact, project, source, created_at, updated_at, superseded_by, status FROM memories WHERE conversation_id = ?1 AND status = 'active' ORDER BY updated_at DESC LIMIT 50",
-		)
-			.bind(conversationId)
+		const queryWords = keywords(queryText);
+		if (queryWords.length === 0) return [];
+		const { sql, params } = buildRecallQuery(queryWords);
+		const rows = await env.DB.prepare(sql)
+			.bind(conversationId, ...params)
 			.all<MemoryRow>();
 		const memories = (rows.results ?? []).map((row) =>
 			toMemory(row, conversationId),
 		);
 		if (memories.length === 0) return [];
-		const queryWords = keywords(queryText);
-		if (queryWords.length === 0) {
-			// No meaningful words to match on: the most recent few.
-			return memories.slice(0, RECALL_LIMIT);
-		}
 		const scored = memories.map((memory) => {
 			let score = 0;
 			const topicWords = keywords(memory.topic);
@@ -223,12 +258,11 @@ export async function loadMemories(
 			(a, b) =>
 				b.score - a.score || b.memory.updated_at - a.memory.updated_at,
 		);
-		// Only memories that matched something, or — when nothing
-		// matched at all — the single most recent one, so the model
-		// is not flooded with irrelevant facts.
-		const matched = scored.filter((item) => item.score > 0);
-		if (matched.length === 0) return [scored[0].memory];
-		return matched.slice(0, RECALL_LIMIT).map((item) => item.memory);
+		// Only memories that actually matched the question.
+		return scored
+			.filter((item) => item.score > 0)
+			.slice(0, RECALL_LIMIT)
+			.map((item) => item.memory);
 	} catch (error) {
 		console.error("Failed to load memories:", error);
 		return [];
@@ -294,10 +328,16 @@ export async function storeMemory(
 			});
 		}
 		const now = Date.now();
+		// Dedup is scoped by topic AND project: the same topic in a
+		// different project is a different memory and must never
+		// replace this one. A null project only matches other
+		// null-project memories; a named project only matches the
+		// same name. (SQLite: `project = NULL` never matches, so
+		// the IS NULL branch is needed.)
 		const existing = await env.DB.prepare(
-			"SELECT id, fact FROM memories WHERE conversation_id = ?1 AND status = 'active' AND kind = ?2 AND lower(topic) = lower(?3) ORDER BY updated_at DESC LIMIT 1",
+			"SELECT id, fact FROM memories WHERE conversation_id = ?1 AND status = 'active' AND kind = ?2 AND lower(topic) = lower(?3) AND ((?4 IS NULL AND project IS NULL) OR project = ?4) ORDER BY updated_at DESC LIMIT 1",
 		)
-			.bind(conversationId, kind, topic)
+			.bind(conversationId, kind, topic, project)
 			.first<{ id: number; fact: string }>();
 		if (existing) {
 			if (existing.fact.trim().toLowerCase() === fact.toLowerCase()) {
