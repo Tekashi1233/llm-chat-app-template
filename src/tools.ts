@@ -16,7 +16,12 @@
  */
 
 import type { Env } from "./types";
-import { getActionHistory, getDeviceStatus, runDeviceCommand } from "./devices";
+import {
+	getActionHistory,
+	getDeviceStatus,
+	revokeOwnerDevices,
+	runDeviceCommand,
+} from "./devices";
 import { storeMemory } from "./memory";
 
 export const TOOL_NAMES = [
@@ -33,6 +38,7 @@ export const TOOL_NAMES = [
 	"run_command",
 	"get_action_history",
 	"remember_fact",
+	"revoke_device",
 ] as const;
 
 /**
@@ -332,7 +338,33 @@ export const TOOL_DEFINITIONS: FunctionTool[] = [
 			},
 		},
 	},
+	{
+		type: "function",
+		function: {
+			name: "revoke_device",
+			description:
+				"Unpair the user's paired Windows laptop (revoke its pairing) so the companion app stops and the laptop is disconnected from ATHENA. Use it ONLY when the user says the spoken word \"wolf\" — \"wolf\" means UNPAIR the laptop, never put Windows to sleep. This tool only works on a voice-originated turn: the user must have spoken into the microphone. A typed \"wolf\" is refused. It takes no arguments.",
+			parameters: {
+				type: "object",
+				properties: {},
+				required: [],
+			},
+		},
+	},
 ];
+
+/**
+ * Extra context the chat handler threads into tool execution.
+ * ownerId scopes device/memory tools to the authenticated owner;
+ * viaVoice is true only when the latest user message in this turn
+ * came from the microphone (client-asserted). revoke_device is
+ * refused unless viaVoice is true — the guard is enforced here,
+ * server-side, not just in the prompt.
+ */
+export type ToolContext = {
+	ownerId?: string | null;
+	viaVoice?: boolean;
+};
 
 /**
  * Runs one tool by name with parsed JSON arguments.
@@ -340,12 +372,15 @@ export const TOOL_DEFINITIONS: FunctionTool[] = [
  * `env` is needed by tools that read D1 (get_device_status).
  * `conversationId` scopes remember_fact to this browser's
  * conversation — memories never leak to another browser or device.
+ * `context` (N5 M2) carries the authenticated owner id and whether
+ * the latest user message came from the microphone (viaVoice).
  */
 export async function executeTool(
 	name: string,
 	args: Record<string, unknown>,
 	env?: Env,
 	conversationId?: string,
+	context?: ToolContext,
 ): Promise<string> {
 	try {
 		switch (name) {
@@ -370,7 +405,7 @@ export async function executeTool(
 						error: "Device status is unavailable.",
 					});
 				}
-				return await getDeviceStatus(env);
+				return await getDeviceStatus(env, context?.ownerId);
 			case "open_app":
 			case "search_files":
 			case "create_file":
@@ -382,21 +417,43 @@ export async function executeTool(
 						error: "Device commands are unavailable.",
 					});
 				}
-				return await runDeviceCommand(env, name, args);
+				return await runDeviceCommand(env, name, args, context?.ownerId);
 			case "get_action_history":
 				if (!env) {
 					return JSON.stringify({
 						error: "Device history is unavailable.",
 					});
 				}
-				return await getActionHistory(env);
+				return await getActionHistory(env, context?.ownerId);
 			case "remember_fact":
 				if (!env || !conversationId) {
 					return JSON.stringify({
 						error: "Memory storage is unavailable.",
 					});
 				}
-				return await storeMemory(env, conversationId, args);
+				return await storeMemory(env, conversationId, args, context?.ownerId);
+			case "revoke_device": {
+				// N5 M2 voice-only guard, enforced server-side: the
+				// tool executes ONLY when the latest user message in
+				// this turn came from the microphone (via_voice).
+				// A typed "wolf" — or any non-voice turn — is refused
+				// here and NOTHING is revoked, whatever the model
+				// was told. The guard is the enforcement; the prompt
+				// routing is only the invitation.
+				if (context?.viaVoice !== true) {
+					return JSON.stringify({
+						refused: true,
+						error:
+							"Unpairing only works from a spoken voice command. Say \"wolf\" into the microphone and send it, or unpair from the companion app on the laptop (right-click the tray icon, then \"Unpair this laptop\"). Nothing was unpaired.",
+					});
+				}
+				if (!env) {
+					return JSON.stringify({
+						error: "Device revocation is unavailable.",
+					});
+				}
+				return await revokeOwnerDevices(env, context?.ownerId ?? null);
+			}
 			default:
 				return JSON.stringify({ error: `Unknown tool: ${name}` });
 		}

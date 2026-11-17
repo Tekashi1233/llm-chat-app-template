@@ -42,6 +42,15 @@ export type ChatMessage =
 			 * Never sent to the model; buildModelMessages strips it.
 			 */
 			origin?: "server" | "user" | "legacy";
+			/**
+			 * N5 M2: client-asserted voice origin. True only when
+			 * the message came from the app/website microphone
+			 * (speech-to-text), never auto-sent. The revoke_device
+			 * tool guard reads it; buildModelMessages strips it
+			 * before the model sees it, so it never reaches the
+			 * model context. Never persisted to D1.
+			 */
+			via_voice?: boolean;
 	  }
 	| {
 			role: "assistant";

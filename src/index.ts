@@ -18,10 +18,10 @@ import {
 	redactCredentials,
 } from "./memory";
 import {
-	checkAuth,
 	checkRateLimit,
 	RATE_LIMITS,
 } from "./security";
+import { checkOwnerAuth, handleAuthRequest } from "./auth";
 import {
 	filterHistoryMessages,
 	normalizeOrigin,
@@ -100,7 +100,9 @@ Tools:
   (read a text file in an approved folder), run_command
   (run an approved command on the paired laptop, e.g. ping
   or network info), get_action_history (what ATHENA has
-  done on the paired laptop lately).
+  done on the paired laptop lately), revoke_device (unpair
+  the laptop — only ever on the spoken word "wolf" from the
+  microphone; a typed "wolf" is refused).
 - Use a tool when the user asks for the weather, a fact you may not
   know, a calculation, or the time or date. Do not guess these.
   When you need a tool, call it through the tool-calling feature —
@@ -149,12 +151,16 @@ Tools:
   tell the user you will do something later. If they ask for
   two things at once, do the first, report its result, and
   ask them to say go for the second.
-- If the user asks to unpair or disconnect their laptop,
-  tell them to do it in the companion app: right-click the
-  tray icon, then "Unpair this laptop". There is no way to
-  unpair from chat — it is a deliberate action on the laptop
-  itself, with a confirmation, and afterwards the app stops
-  and you will see no laptop paired until they pair again.
+- If the user says the spoken word "wolf" (a voice command
+  from the microphone), call the revoke_device tool: "wolf"
+  means UNPAIR the laptop — never put Windows to sleep.
+  Unpairing happens only by that spoken word, or from the
+  companion tray app on the laptop (right-click the tray
+  icon, then "Unpair this laptop"). A typed "wolf" cannot
+  unpair anything: the tool refuses typed turns, so say so
+  plainly and do not try another way around it. After an
+  unpair the app stops and you will see no laptop paired
+  until they pair again.
 - After a tool returns a result, answer from that result in plain
   words. Never claim a tool result you did not actually get.
 
@@ -184,7 +190,7 @@ export default {
 					"Access-Control-Allow-Origin": "*",
 					"Access-Control-Allow-Methods": "POST, GET, OPTIONS",
 					"Access-Control-Allow-Headers":
-						"Content-Type, X-Vesper-Key, X-Vesper-Device",
+						"Content-Type, X-Vesper-Key, X-Vesper-Device, Authorization",
 				},
 			});
 		}
@@ -207,7 +213,7 @@ export default {
 						reasoning_effort: REASONING_EFFORT,
 						streaming: true,
 						tools: TOOL_NAMES,
-						auth: "x-vesper-key",
+						auth: "bearer-token-or-x-vesper-key",
 						rate_limits: RATE_LIMITS,
 						memory: env.DB ? "d1" : "disabled",
 						status: "configured",
@@ -223,6 +229,18 @@ export default {
 
 			// Method not allowed for other request types
 			return new Response("Method not allowed", { status: 405 });
+		}
+
+		if (url.pathname === "/api/auth/status" ||
+			url.pathname === "/api/auth/setup" ||
+			url.pathname === "/api/auth/login" ||
+			url.pathname === "/api/auth/logout" ||
+			url.pathname === "/api/auth/logout-all" ||
+			url.pathname === "/api/auth/sessions" ||
+			url.pathname === "/api/auth/exchange") {
+			// N5 M2 owner auth: setup, login, logout, sessions,
+			// site-key -> token exchange. Auth is handled inside.
+			return handleAuthRequest(request, env);
 		}
 
 		if (url.pathname === "/api/chat") {
@@ -354,7 +372,9 @@ export async function handleChatRequest(
 	try {
 		// Phase 7 protection, before any model work: rate limit first
 		// (per IP, so one abusive address cannot flood the quota),
-		// then the API key.
+		// then auth — Bearer token or, during the grace period, the
+		// site key. A Bearer request is owner-scoped; a site-key
+		// request is scoped to the single owner once one exists.
 		const limit = await checkRateLimit(request, env);
 		if (!limit.ok) {
 			return new Response(
@@ -371,7 +391,7 @@ export async function handleChatRequest(
 				},
 			);
 		}
-		const auth = await checkAuth(request, env);
+		const auth = await checkOwnerAuth(request, env);
 		if (!auth.ok) {
 			return new Response(JSON.stringify({ error: "Unauthorized" }), {
 				status: 401,
@@ -381,6 +401,7 @@ export async function handleChatRequest(
 				},
 			});
 		}
+		const ownerId = auth.ownerId;
 
 		// Parse JSON request body, then validate at the API boundary:
 		// only user-role messages are accepted. System, assistant
@@ -413,24 +434,40 @@ export async function handleChatRequest(
 			);
 		}
 
-		// Load recent conversation history from D1 memory
-		const history = await loadHistory(env, conversation_id);
+		// N5 M2: a conversation that belongs to another owner does
+		// not exist for this caller — 404, not 403, so the reply
+		// does not confirm the conversation exists. A brand-new
+		// conversation (no rows yet) is always allowed.
+		if (
+			ownerId &&
+			(await conversationBelongsToOtherOwner(env, conversation_id, ownerId))
+		) {
+			return new Response(JSON.stringify({ error: "Not found" }), {
+				status: 404,
+				headers: {
+					"content-type": "application/json",
+					"Access-Control-Allow-Origin": "*",
+				},
+			});
+		}
+
+		// Load recent conversation history from D1 memory, scoped
+		// to the authenticated owner when one is known.
+		const history = await loadHistory(env, conversation_id, ownerId);
 
 		// Load long-term memories relevant to the latest user message.
-		// Scoped to this conversation_id: the frontend sends one
-		// random ID per browser (localStorage), so in normal use each
-		// browser sees only its own memories. This is scoping by a
-		// caller-supplied identifier, NOT authenticated isolation:
-		// conversation_id is taken straight from the request body,
-		// and anyone holding the shared site key who knows an ID can
-		// read that conversation's history and memories — and
-		// /api/backup exports every conversation without needing an
-		// ID at all. Do not describe this as secure per-user
-		// isolation.
+		// Scoped to this conversation_id AND the owner: a Bearer
+		// (or site-key, once an owner exists) request only ever
+		// sees its own owner's rows.
 		const latestUserText = [...userMessages]
 			.reverse()
 			.find((msg) => msg.role === "user")?.content ?? "";
-		const memories = await loadMemories(env, conversation_id, latestUserText);
+		const memories = await loadMemories(
+			env,
+			conversation_id,
+			latestUserText,
+			ownerId,
+		);
 		const memoryBlock = formatMemoriesForPrompt(memories);
 
 		// Build the messages the model sees: canonical system prompt
@@ -484,6 +521,12 @@ export async function handleChatRequest(
 			// server's own executeTool results — never from the
 			// caller's history and never from a stored row.
 			const calls = toolCalls.slice(0, 3);
+			// N5 M2: only the latest user message's voice flag
+			// counts for the revoke guard — a spoken turn, not an
+			// old one.
+			const lastIncoming = userMessages[userMessages.length - 1];
+			const viaVoice =
+				lastIncoming?.role === "user" && lastIncoming.via_voice === true;
 			const toolMessages: ChatMessage[] = [];
 			for (const call of calls) {
 				let args: Record<string, unknown> = {};
@@ -500,6 +543,10 @@ export async function handleChatRequest(
 					args,
 					env,
 					conversation_id,
+					{
+						ownerId,
+						viaVoice,
+					},
 				);
 				toolMessages.push({
 					role: "tool",
@@ -545,9 +592,13 @@ export async function handleChatRequest(
 		// the caller forged.
 		const [clientBranch, memoryBranch] = clientStream.tee();
 		ctx.waitUntil(
-			saveConversation(env, conversation_id, userMessages, memoryBranch).catch(
-				(err) => console.error("Failed to save conversation:", err),
-			),
+			saveConversation(
+				env,
+				conversation_id,
+				userMessages,
+				memoryBranch,
+				ownerId,
+			).catch((err) => console.error("Failed to save conversation:", err)),
 		);
 
 		return new Response(clientBranch, {
@@ -571,8 +622,10 @@ export async function handleChatRequest(
 }
 
 /**
- * Exports the whole D1 memory table as JSON. Same protection as
- * chat: rate limit first, then the API key. GET only.
+ * Exports the owner's D1 memory rows as JSON (N5 M2: scoped to the
+ * authenticated owner once one exists; legacy unscoped export
+ * before that). Same protection as chat: rate limit first, then
+ * Bearer token or site key. GET only.
  */
 /**
  * GET /api/memories?conversation_id=… — read-only list of one
@@ -604,7 +657,7 @@ async function handleMemoriesRequest(
 				},
 			);
 		}
-		const auth = await checkAuth(request, env);
+		const auth = await checkOwnerAuth(request, env);
 		if (!auth.ok) {
 			return new Response(JSON.stringify({ error: "Unauthorized" }), {
 				status: 401,
@@ -619,7 +672,17 @@ async function handleMemoriesRequest(
 				{ status: 400, headers: jsonHeaders },
 			);
 		}
-		const memories = await listMemories(env, conversationId);
+		// N5 M2: another owner's conversation does not exist here.
+		if (
+			auth.ownerId &&
+			(await conversationBelongsToOtherOwner(env, conversationId, auth.ownerId))
+		) {
+			return new Response(JSON.stringify({ error: "Not found" }), {
+				status: 404,
+				headers: jsonHeaders,
+			});
+		}
+		const memories = await listMemories(env, conversationId, auth.ownerId);
 		return new Response(
 			JSON.stringify({
 				conversation_id: conversationId,
@@ -661,7 +724,7 @@ async function handleBackupRequest(
 				},
 			);
 		}
-		const auth = await checkAuth(request, env);
+		const auth = await checkOwnerAuth(request, env);
 		if (!auth.ok) {
 			return new Response(JSON.stringify({ error: "Unauthorized" }), {
 				status: 401,
@@ -674,16 +737,32 @@ async function handleBackupRequest(
 				{ headers: jsonHeaders },
 			);
 		}
-		const rows = await env.DB.prepare(
-			"SELECT id, conversation_id, role, content, created_at, origin FROM messages ORDER BY id ASC LIMIT 5000",
-		).all<{
-			id: number;
-			conversation_id: string;
-			role: string;
-			content: string;
-			created_at: number;
-			origin: string | null;
-		}>();
+		// N5 M2: a Bearer (or site-key, once an owner exists) export
+		// covers only the owner's conversations. Before any owner
+		// exists, the legacy unscoped export remains.
+		const rows = auth.ownerId
+			? await env.DB.prepare(
+					"SELECT id, conversation_id, role, content, created_at, origin FROM messages WHERE owner_id = ?1 ORDER BY id ASC LIMIT 5000",
+				)
+					.bind(auth.ownerId)
+					.all<{
+						id: number;
+						conversation_id: string;
+						role: string;
+						content: string;
+						created_at: number;
+						origin: string | null;
+					}>()
+			: await env.DB.prepare(
+					"SELECT id, conversation_id, role, content, created_at, origin FROM messages ORDER BY id ASC LIMIT 5000",
+				).all<{
+					id: number;
+					conversation_id: string;
+					role: string;
+					content: string;
+					created_at: number;
+					origin: string | null;
+				}>();
 		const messages = rows.results ?? [];
 		return new Response(
 			JSON.stringify({
@@ -733,17 +812,53 @@ const HISTORY_LIMIT = 20;
  * Never throws: on any failure the chat simply continues without
  * memory. Exported for testing.
  */
+/**
+ * N5 M2: true when a conversation has rows but none of them belong
+ * to this owner — i.e. it is another owner's conversation. False
+ * for a brand-new conversation (no rows) and for the owner's own.
+ * Callers answer 404, not 403, so the reply does not confirm the
+ * conversation exists.
+ */
+export async function conversationBelongsToOtherOwner(
+	env: Env,
+	conversationId: string,
+	ownerId: string,
+): Promise<boolean> {
+	try {
+		if (!env.DB) return false;
+		for (const table of ["messages", "memories"] as const) {
+			const row = await env.DB.prepare(
+				`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN owner_id = ?2 THEN 1 ELSE 0 END), 0) AS owned FROM ${table} WHERE conversation_id = ?1`,
+			)
+				.bind(conversationId, ownerId)
+				.first<{ total: number; owned: number }>();
+			if (row && row.total > 0 && row.owned === 0) return true;
+		}
+		return false;
+	} catch (error) {
+		console.error("Failed to check conversation ownership:", error);
+		return false;
+	}
+}
+
 export async function loadHistory(
 	env: Env,
 	conversationId: string,
+	ownerId?: string | null,
 ): Promise<ChatMessage[]> {
 	try {
 		if (!env.DB) return [];
-		const rows = await env.DB.prepare(
-			"SELECT role, content, origin FROM messages WHERE conversation_id = ?1 ORDER BY id DESC LIMIT ?2",
-		)
-			.bind(conversationId, HISTORY_LIMIT)
-			.all<{ role: string; content: string; origin: string | null }>();
+		const rows = ownerId
+			? await env.DB.prepare(
+					"SELECT role, content, origin FROM messages WHERE conversation_id = ?1 AND owner_id = ?2 ORDER BY id DESC LIMIT ?3",
+				)
+					.bind(conversationId, ownerId, HISTORY_LIMIT)
+					.all<{ role: string; content: string; origin: string | null }>()
+			: await env.DB.prepare(
+					"SELECT role, content, origin FROM messages WHERE conversation_id = ?1 ORDER BY id DESC LIMIT ?2",
+				)
+					.bind(conversationId, HISTORY_LIMIT)
+					.all<{ role: string; content: string; origin: string | null }>();
 		return filterHistoryMessages(
 			(rows.results ?? [])
 				.reverse()
@@ -786,6 +901,7 @@ export async function saveConversation(
 	conversationId: string,
 	newMessages: ChatMessage[],
 	stream: ReadableStream<Uint8Array>,
+	ownerId?: string | null,
 ): Promise<void> {
 	if (!env.DB) return;
 	const reply = await readStreamedReply(stream);
@@ -801,16 +917,16 @@ export async function saveConversation(
 		const content = msg.content.trim();
 		if (!content) continue;
 		await env.DB.prepare(
-			"INSERT INTO messages (conversation_id, role, content, created_at, origin) VALUES (?1, ?2, ?3, ?4, ?5)",
+			"INSERT INTO messages (conversation_id, role, content, created_at, origin, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
 		)
-			.bind(conversationId, msg.role, redactCredentials(content), now, "user")
+			.bind(conversationId, msg.role, redactCredentials(content), now, "user", ownerId ?? null)
 			.run();
 	}
 	if (reply) {
 		await env.DB.prepare(
-			"INSERT INTO messages (conversation_id, role, content, created_at, origin) VALUES (?1, ?2, ?3, ?4, ?5)",
+			"INSERT INTO messages (conversation_id, role, content, created_at, origin, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
 		)
-			.bind(conversationId, "assistant", redactCredentials(reply), Date.now(), "server")
+			.bind(conversationId, "assistant", redactCredentials(reply), Date.now(), "server", ownerId ?? null)
 			.run();
 	}
 }

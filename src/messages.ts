@@ -37,15 +37,23 @@ export function validateIncomingMessages(input: unknown): ChatMessage[] {
 	const users: ChatMessage[] = [];
 	for (const item of input) {
 		if (typeof item !== "object" || item === null) continue;
-		const msg = item as { role?: unknown; content?: unknown };
+		const msg = item as { role?: unknown; content?: unknown; via_voice?: unknown };
 		if (msg.role !== "user") continue;
 		if (typeof msg.content !== "string") continue;
 		const content = msg.content.trim();
 		if (!content) continue;
-		users.push({
+		// N5 M2: preserve the client-asserted voice flag, user
+		// messages only, boolean only. Anything else is dropped.
+		// The flag is never sent to the model (buildModelMessages
+		// strips it) and never persisted; it exists only so the
+		// revoke_device tool guard can tell a spoken turn from a
+		// typed one in this request.
+		const userMsg: ChatMessage = {
 			role: "user",
 			content: content.slice(0, MAX_MESSAGE_CHARS),
-		});
+		};
+		if (msg.via_voice === true) userMsg.via_voice = true;
+		users.push(userMsg);
 	}
 	return users.slice(-MAX_INCOMING_MESSAGES);
 }

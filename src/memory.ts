@@ -218,15 +218,25 @@ function toMemory(row: MemoryRow, conversationId: string): Memory {
 export async function listMemories(
 	env: Env,
 	conversationId: string,
+	ownerId?: string | null,
 ): Promise<Memory[]> {
 	if (!env.DB) return [];
 	try {
-		const rows = await env.DB.prepare(
-			"SELECT id, kind, topic, fact, project, source, created_at, updated_at, superseded_by, status FROM memories " +
-				"WHERE conversation_id = ?1 AND status != 'deleted' ORDER BY updated_at DESC LIMIT 200",
-		)
-			.bind(conversationId)
-			.all<MemoryRow>();
+		// N5 M2: when an owner is known, only that owner's rows.
+		// ownerId null = legacy unscoped behaviour (no owner yet).
+		const rows = ownerId
+			? await env.DB.prepare(
+					"SELECT id, kind, topic, fact, project, source, created_at, updated_at, superseded_by, status FROM memories " +
+						"WHERE conversation_id = ?1 AND owner_id = ?2 AND status != 'deleted' ORDER BY updated_at DESC LIMIT 200",
+				)
+					.bind(conversationId, ownerId)
+					.all<MemoryRow>()
+			: await env.DB.prepare(
+					"SELECT id, kind, topic, fact, project, source, created_at, updated_at, superseded_by, status FROM memories " +
+						"WHERE conversation_id = ?1 AND status != 'deleted' ORDER BY updated_at DESC LIMIT 200",
+				)
+					.bind(conversationId)
+					.all<MemoryRow>();
 		return (rows.results ?? []).map((row) => toMemory(row, conversationId));
 	} catch {
 		return [];
@@ -278,10 +288,17 @@ export function buildModelMessages(
 			`Dropped ${dropped.length} non-user message(s) from the request; canonical system prompt kept.`,
 		);
 	}
+	// Incoming user messages are rebuilt as {role, content} only:
+	// via_voice (N5 M2) is a server-side tool-guard flag, never
+	// model input, and origin is provenance metadata, never model
+	// input — neither rides into the model context.
+	const incomingForModel: ChatMessage[] = incoming
+		.filter((m) => m.role === "user")
+		.map((m) => ({ role: "user" as const, content: m.content }));
 	return [
 		{ role: "system", content: systemPrompt + memoryBlock },
 		...historyForModel,
-		...incoming.filter((m) => m.role === "user"),
+		...incomingForModel,
 	];
 }
 
@@ -296,21 +313,27 @@ export function buildModelMessages(
  * are then ranked in code and capped at RECALL_LIMIT.
  * Pure function, exported for testing.
  */
-export function buildRecallQuery(queryWords: string[]): {
+export function buildRecallQuery(
+	queryWords: string[],
+	ownerId?: string | null,
+): {
 	sql: string;
 	params: string[];
 } {
 	const words = queryWords.slice(0, MAX_QUERY_WORDS);
 	const params = words.map((word) => `%${word}%`);
-	// ?1 is the conversation id; ?2.. are one LIKE pattern per word,
-	// each reused across topic, fact and project.
+	// ?1 is the conversation id; when an owner is known, ?2 is the
+	// owner id and the LIKE patterns shift by one (?3..).
+	const ownerOffset = ownerId ? 1 : 0;
 	const clauses = words.map(
 		(_, i) =>
-			`(lower(topic) LIKE ?${i + 2} OR lower(fact) LIKE ?${i + 2} OR lower(project) LIKE ?${i + 2})`,
+			`(lower(topic) LIKE ?${i + 2 + ownerOffset} OR lower(fact) LIKE ?${i + 2 + ownerOffset} OR lower(project) LIKE ?${i + 2 + ownerOffset})`,
 	);
 	const sql =
 		"SELECT id, kind, topic, fact, project, source, created_at, updated_at, superseded_by, status FROM memories " +
-		"WHERE conversation_id = ?1 AND status = 'active' AND (" +
+		"WHERE conversation_id = ?1" +
+		(ownerId ? " AND owner_id = ?2" : "") +
+		" AND status = 'active' AND (" +
 		clauses.join(" OR ") +
 		") ORDER BY updated_at DESC LIMIT " +
 		RECALL_ROW_CAP;
@@ -330,14 +353,15 @@ export async function loadMemories(
 	env: Env,
 	conversationId: string,
 	queryText: string,
+	ownerId?: string | null,
 ): Promise<Memory[]> {
 	try {
 		if (!env.DB) return [];
 		const queryWords = keywords(queryText);
 		if (queryWords.length === 0) return [];
-		const { sql, params } = buildRecallQuery(queryWords);
+		const { sql, params } = buildRecallQuery(queryWords, ownerId);
 		const rows = await env.DB.prepare(sql)
-			.bind(conversationId, ...params)
+			.bind(conversationId, ...(ownerId ? [ownerId] : []), ...params)
 			.all<MemoryRow>();
 		const memories = (rows.results ?? []).map((row) =>
 			toMemory(row, conversationId),
@@ -393,6 +417,7 @@ export async function storeMemory(
 		project?: unknown;
 		source?: unknown;
 	},
+	ownerId?: string | null,
 ): Promise<string> {
 	try {
 		if (!env.DB) {
@@ -440,9 +465,17 @@ export async function storeMemory(
 		// same name. (SQLite: `project = NULL` never matches, so
 		// the IS NULL branch is needed.)
 		const existing = await env.DB.prepare(
-			"SELECT id, fact FROM memories WHERE conversation_id = ?1 AND status = 'active' AND kind = ?2 AND lower(topic) = lower(?3) AND ((?4 IS NULL AND project IS NULL) OR project = ?4) ORDER BY updated_at DESC LIMIT 1",
+			"SELECT id, fact FROM memories WHERE conversation_id = ?1 AND status = 'active' AND kind = ?2 AND lower(topic) = lower(?3) AND ((?4 IS NULL AND project IS NULL) OR project = ?4)" +
+				(ownerId ? " AND owner_id = ?5" : "") +
+				" ORDER BY updated_at DESC LIMIT 1",
 		)
-			.bind(conversationId, kind, topic, project)
+			.bind(
+				conversationId,
+				kind,
+				topic,
+				project,
+				...(ownerId ? [ownerId] : []),
+			)
 			.first<{ id: number; fact: string }>();
 		if (existing) {
 			if (existing.fact.trim().toLowerCase() === fact.toLowerCase()) {
@@ -478,6 +511,7 @@ export async function storeMemory(
 						topic,
 						project,
 						fact,
+						ownerId,
 					),
 				);
 			}
@@ -506,9 +540,9 @@ export async function storeMemory(
 						"UPDATE memories SET status = 'superseded' WHERE id = ?1 AND status = 'active'",
 					).bind(existing.id),
 					env.DB.prepare(
-						"INSERT INTO memories (conversation_id, kind, topic, fact, project, source, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active')",
+						"INSERT INTO memories (conversation_id, kind, topic, fact, project, source, created_at, updated_at, status, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9)",
 					)
-						.bind(conversationId, kind, topic, fact, project, source, now, now),
+						.bind(conversationId, kind, topic, fact, project, source, now, now, ownerId ?? null),
 				]);
 			} catch (error) {
 				batchError = error;
@@ -538,6 +572,7 @@ export async function storeMemory(
 						project,
 						fact,
 						existing.fact,
+						ownerId,
 					),
 				);
 			}
@@ -564,9 +599,9 @@ export async function storeMemory(
 		}
 		try {
 			await env.DB.prepare(
-				"INSERT INTO memories (conversation_id, kind, topic, fact, project, source, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active')",
+				"INSERT INTO memories (conversation_id, kind, topic, fact, project, source, created_at, updated_at, status, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9)",
 			)
-				.bind(conversationId, kind, topic, fact, project, source, now, now)
+				.bind(conversationId, kind, topic, fact, project, source, now, now, ownerId ?? null)
 				.run();
 		} catch (insertError) {
 			// A concurrent insert for the same topic may have landed
@@ -579,6 +614,7 @@ export async function storeMemory(
 				kind,
 				topic,
 				project,
+				ownerId,
 			);
 			if (
 				actual &&
@@ -616,13 +652,16 @@ export async function readActiveMemories(
 	kind: string,
 	topic: string,
 	project: string | null,
+	ownerId?: string | null,
 ): Promise<Array<{ id: number; fact: string }> | null> {
 	try {
 		if (!env.DB) return null;
 		const rows = await env.DB.prepare(
-			"SELECT id, fact FROM memories WHERE conversation_id = ?1 AND status = 'active' AND kind = ?2 AND lower(topic) = lower(?3) AND ((?4 IS NULL AND project IS NULL) OR project = ?4) ORDER BY updated_at DESC",
+			"SELECT id, fact FROM memories WHERE conversation_id = ?1 AND status = 'active' AND kind = ?2 AND lower(topic) = lower(?3) AND ((?4 IS NULL AND project IS NULL) OR project = ?4)" +
+				(ownerId ? " AND owner_id = ?5" : "") +
+				" ORDER BY updated_at DESC",
 		)
-			.bind(conversationId, kind, topic, project)
+			.bind(conversationId, kind, topic, project, ...(ownerId ? [ownerId] : []))
 			.all<{ id: number; fact: string }>();
 		return rows.results ?? [];
 	} catch (error) {
@@ -645,6 +684,7 @@ export async function verifyRefresh(
 	topic: string,
 	project: string | null,
 	fact: string,
+	ownerId?: string | null,
 ): Promise<Record<string, unknown>> {
 	const actual = await readActiveMemories(
 		env,
@@ -652,6 +692,7 @@ export async function verifyRefresh(
 		kind,
 		topic,
 		project,
+		ownerId,
 	);
 	if (actual === null) {
 		return {
@@ -707,6 +748,7 @@ export async function verifyReplacement(
 	project: string | null,
 	fact: string,
 	previousFact: string,
+	ownerId?: string | null,
 ): Promise<Record<string, unknown>> {
 	const actual = await readActiveMemories(
 		env,
@@ -714,6 +756,7 @@ export async function verifyReplacement(
 		kind,
 		topic,
 		project,
+		ownerId,
 	);
 	if (actual === null) {
 		return {

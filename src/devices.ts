@@ -28,7 +28,13 @@
  */
 
 import type { Env } from "./types";
-import { checkAuth, checkRateLimit } from "./security";
+import { checkRateLimit } from "./security";
+import {
+	auditAuth,
+	checkOwnerAuth,
+	validateBearerToken,
+	type AuthContext,
+} from "./auth";
 
 const jsonHeaders = {
 	"content-type": "application/json",
@@ -155,24 +161,29 @@ export async function handleDevicesRequest(
 
 /**
  * Pairing and confirmation are owner actions: they need the site
- * key and go through the normal rate limit.
+ * key (grace period) or a Bearer token, and go through the normal
+ * rate limit. Returns the denial response, or null plus the auth
+ * context (whose ownerId scopes the new device row).
  */
-async function requireSiteAccess(
+async function requireOwnerAccess(
 	request: Request,
 	env: Env,
-): Promise<Response | null> {
+): Promise<{ denied: Response | null; auth: AuthContext | null }> {
 	const limit = await checkRateLimit(request, env);
 	if (!limit.ok) {
-		return json(
-			{ error: "Too many requests. Please wait a minute and try again." },
-			429,
-		);
+		return {
+			denied: json(
+				{ error: "Too many requests. Please wait a minute and try again." },
+				429,
+			),
+			auth: null,
+		};
 	}
-	const auth = await checkAuth(request, env);
+	const auth = await checkOwnerAuth(request, env);
 	if (!auth.ok) {
-		return json({ error: "Unauthorized" }, 401);
+		return { denied: json({ error: "Unauthorized" }, 401), auth: null };
 	}
-	return null;
+	return { denied: null, auth };
 }
 
 async function readBody(request: Request): Promise<Record<string, unknown>> {
@@ -194,9 +205,9 @@ async function handleDeviceStatus(
 	request: Request,
 	env: Env,
 ): Promise<Response> {
-	const denied = await requireSiteAccess(request, env);
+	const { denied, auth } = await requireOwnerAccess(request, env);
 	if (denied) return denied;
-	const status = await getDeviceStatus(env);
+	const status = await getDeviceStatus(env, auth?.ownerId ?? null);
 	return new Response(status, {
 		headers: {
 			"content-type": "application/json",
@@ -215,10 +226,10 @@ async function handleDeviceActivity(
 	request: Request,
 	env: Env,
 ): Promise<Response> {
-	const denied = await requireSiteAccess(request, env);
+	const { denied, auth } = await requireOwnerAccess(request, env);
 	if (denied) return denied;
 	if (!env.DB) return json({ device: null, count: 0, actions: [] });
-	const device = await getPairedDevice(env);
+	const device = await getPairedDevice(env, auth?.ownerId ?? null);
 	if (!device) return json({ device: null, count: 0, actions: [] });
 	const wanted = Number(
 		new URL(request.url).searchParams.get("limit") ?? 50,
@@ -251,8 +262,8 @@ async function handleDeviceActivity(
  * code (handleConfirm). The secret is stored as a hash only.
  */
 async function handlePair(request: Request, env: Env): Promise<Response> {
-	const blocked = await requireSiteAccess(request, env);
-	if (blocked) return blocked;
+	const { denied, auth } = await requireOwnerAccess(request, env);
+	if (denied) return denied;
 	if (!env.DB) return json({ error: "Database unavailable" }, 500);
 
 	const body = await readBody(request);
@@ -283,9 +294,9 @@ async function handlePair(request: Request, env: Env): Promise<Response> {
 	const secretHash = await sha256Hex(secret);
 	const now = Date.now();
 	await env.DB.prepare(
-		"INSERT INTO devices (id, name, secret_hash, pair_code, status, created_at) VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
+		"INSERT INTO devices (id, name, secret_hash, pair_code, status, created_at, owner_id) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6)",
 	)
-		.bind(deviceId, name || "Windows laptop", secretHash, code, now)
+		.bind(deviceId, name || "Windows laptop", secretHash, code, now, auth?.ownerId ?? null)
 		.run();
 	return json({
 		ok: true,
@@ -302,8 +313,8 @@ async function handlePair(request: Request, env: Env): Promise<Response> {
  * cleared so it cannot be used again.
  */
 async function handleConfirm(request: Request, env: Env): Promise<Response> {
-	const blocked = await requireSiteAccess(request, env);
-	if (blocked) return blocked;
+	const { denied } = await requireOwnerAccess(request, env);
+	if (denied) return denied;
 	if (!env.DB) return json({ error: "Database unavailable" }, 500);
 
 	const body = await readBody(request);
@@ -434,7 +445,7 @@ async function handleResult(request: Request, env: Env): Promise<Response> {
 		.bind(commandId, auth.device.id)
 		.first<{ kind: string }>();
 	await env.DB.prepare(
-		"INSERT INTO device_actions (device_id, kind, detail, approved, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+		"INSERT INTO device_actions (device_id, kind, detail, approved, created_at, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, (SELECT owner_id FROM devices WHERE id = ?1))",
 	)
 		.bind(
 			auth.device.id,
@@ -458,34 +469,153 @@ async function handleResult(request: Request, env: Env): Promise<Response> {
  * device id and code.
  */
 async function handleRevoke(request: Request, env: Env): Promise<Response> {
+	// Device-secret path (the companion app itself): revoke the
+	// calling device, as before.
 	const auth = await checkDeviceAuth(request, env);
-	if (!auth.ok || !auth.device) {
+	if (auth.ok && auth.device) {
+		const now = Date.now();
+		await env.DB!.prepare(
+			"UPDATE devices SET status = 'revoked' WHERE id = ?1",
+		)
+			.bind(auth.device.id)
+			.run();
+		await env.DB!.prepare(
+			"DELETE FROM device_commands WHERE device_id = ?1 AND status IN ('pending', 'delivered')",
+		)
+			.bind(auth.device.id)
+			.run();
+		await env.DB!.prepare(
+			"INSERT INTO device_actions (device_id, kind, detail, approved, created_at, owner_id) VALUES (?1, 'revoke', 'Pairing revoked from the companion app', 1, ?2, (SELECT owner_id FROM devices WHERE id = ?1))",
+		)
+			.bind(auth.device.id, now)
+			.run();
+		return json({ ok: true });
+	}
+	// N5 M2 owner path: a Bearer token revokes any of the owner's
+	// devices. Body may name one device_id; without it, every
+	// paired device of the owner is revoked. A device that does
+	// not belong to the owner answers 404 (not 403 — it does not
+	// confirm the device exists). The site key alone cannot
+	// revoke here: revocation needs the owner token (or the
+	// device's own secret above).
+	const bearer = await validateBearerToken(request, env);
+	if (!bearer.ok || !bearer.ownerId) {
 		return json({ error: auth.reason ?? "Unauthorized" }, auth.status ?? 401);
 	}
+	if (!env.DB) return json({ error: "Database unavailable" }, 500);
+	const body = await readBody(request);
+	const deviceId =
+		typeof body.device_id === "string" ? body.device_id : "";
 	const now = Date.now();
-	await env.DB.prepare(
-		"UPDATE devices SET status = 'revoked' WHERE id = ?1",
-	)
-		.bind(auth.device.id)
-		.run();
-	await env.DB.prepare(
-		"DELETE FROM device_commands WHERE device_id = ?1 AND status IN ('pending', 'delivered')",
-	)
-		.bind(auth.device.id)
-		.run();
-	await env.DB.prepare(
-		"INSERT INTO device_actions (device_id, kind, detail, approved, created_at) VALUES (?1, 'revoke', 'Pairing revoked from the companion app', 1, ?2)",
-	)
-		.bind(auth.device.id, now)
-		.run();
+	if (deviceId) {
+		const row = await env.DB.prepare(
+			"SELECT id, status FROM devices WHERE id = ?1 AND owner_id = ?2",
+		)
+			.bind(deviceId, bearer.ownerId)
+			.first<{ id: string; status: string }>();
+		if (!row) {
+			return json({ error: "No such device" }, 404);
+		}
+		await revokeDeviceRows(env, [row.id], now);
+	} else {
+		const rows = await env.DB.prepare(
+			"SELECT id FROM devices WHERE owner_id = ?1 AND status = 'paired'",
+		)
+			.bind(bearer.ownerId)
+			.all<{ id: string }>();
+		await revokeDeviceRows(
+			env,
+			(rows.results ?? []).map((r) => r.id),
+			now,
+		);
+	}
+	await auditAuth(env, bearer.ownerId, "revoke", request, deviceId || "all paired devices");
 	return json({ ok: true });
+}
+
+/**
+ * Shared revoke work: mark devices revoked, clear their queued
+ * commands, log one device_actions row each. Used by the device
+ * path, the owner path, and the revoke_device model tool.
+ */
+async function revokeDeviceRows(
+	env: Env,
+	deviceIds: string[],
+	now: number,
+): Promise<void> {
+	for (const deviceId of deviceIds) {
+		await env.DB!.prepare(
+			"UPDATE devices SET status = 'revoked' WHERE id = ?1",
+		)
+			.bind(deviceId)
+			.run();
+		await env.DB!.prepare(
+			"DELETE FROM device_commands WHERE device_id = ?1 AND status IN ('pending', 'delivered')",
+		)
+			.bind(deviceId)
+			.run();
+		await env.DB!.prepare(
+			"INSERT INTO device_actions (device_id, kind, detail, approved, created_at, owner_id) VALUES (?1, 'revoke', 'Pairing revoked by the owner', 1, ?2, (SELECT owner_id FROM devices WHERE id = ?1))",
+		)
+			.bind(deviceId, now)
+			.run();
+	}
+}
+
+/**
+ * Revokes the owner's paired device(s) for the revoke_device model
+ * tool (voice-only; the guard lives in executeTool). Owner-scoped
+ * when ownerId is set; legacy unscoped when it is null (no owner
+ * yet). Returns a short JSON string for the model.
+ */
+export async function revokeOwnerDevices(
+	env: Env,
+	ownerId: string | null,
+): Promise<string> {
+	try {
+		if (!env.DB) {
+			return JSON.stringify({ error: "Device memory is unavailable." });
+		}
+		const now = Date.now();
+		const rows = ownerId
+			? await env.DB.prepare(
+					"SELECT id FROM devices WHERE owner_id = ?1 AND status = 'paired'",
+				)
+					.bind(ownerId)
+					.all<{ id: string }>()
+			: await env.DB.prepare(
+					"SELECT id FROM devices WHERE status = 'paired'",
+				).all<{ id: string }>();
+		const ids = (rows.results ?? []).map((r) => r.id);
+		if (ids.length === 0) {
+			return JSON.stringify({
+				revoked: false,
+				message: "No laptop is paired with ATHENA, so there is nothing to unpair.",
+			});
+		}
+		await revokeDeviceRows(env, ids, now);
+		await auditAuth(env, ownerId, "revoke", null, "voice command");
+		return JSON.stringify({
+			revoked: true,
+			devices_revoked: ids.length,
+			message:
+				"The laptop has been unpaired. The companion app stops, and pairing again needs a fresh pairing code.",
+		});
+	} catch (error) {
+		return JSON.stringify({
+			error: `Could not unpair the laptop: ${error instanceof Error ? error.message : "unknown error"}`,
+		});
+	}
 }
 
 /**
  * Reads the latest status of the most recently seen paired device.
  * Used by the get_device_status model tool. Returns a short JSON
  * string the model turns into a plain-words answer.
- */export async function getDeviceStatus(env: Env): Promise<string> {
+ */export async function getDeviceStatus(
+	env: Env,
+	ownerId?: string | null,
+): Promise<string> {
 	try {
 		if (!env.DB) {
 			return JSON.stringify({
@@ -493,14 +623,25 @@ async function handleRevoke(request: Request, env: Env): Promise<Response> {
 				reason: "Device memory is unavailable.",
 			});
 		}
-		const row = await env.DB.prepare(
-			"SELECT id, name, last_seen, last_status FROM devices WHERE status = 'paired' ORDER BY last_seen DESC LIMIT 1",
-		).first<{
-			id: string;
-			name: string | null;
-			last_seen: number | null;
-			last_status: string | null;
-		}>();
+		const row = ownerId
+			? await env.DB.prepare(
+					"SELECT id, name, last_seen, last_status FROM devices WHERE status = 'paired' AND owner_id = ?1 ORDER BY last_seen DESC LIMIT 1",
+				)
+					.bind(ownerId)
+					.first<{
+						id: string;
+						name: string | null;
+						last_seen: number | null;
+						last_status: string | null;
+					}>()
+			: await env.DB.prepare(
+					"SELECT id, name, last_seen, last_status FROM devices WHERE status = 'paired' ORDER BY last_seen DESC LIMIT 1",
+				).first<{
+					id: string;
+					name: string | null;
+					last_seen: number | null;
+					last_status: string | null;
+				}>();
 		if (!row) {
 			return JSON.stringify({
 				online: false,
@@ -550,12 +691,15 @@ async function handleRevoke(request: Request, env: Env): Promise<Response> {
  * wait — a direct read, so the user can ask "what did you do
  * on my laptop?" and get a straight answer.
  */
-export async function getActionHistory(env: Env): Promise<string> {
+export async function getActionHistory(
+	env: Env,
+	ownerId?: string | null,
+): Promise<string> {
 	try {
 		if (!env.DB) {
 			return JSON.stringify({ error: "Device memory is unavailable." });
 		}
-		const device = await getPairedDevice(env);
+		const device = await getPairedDevice(env, ownerId);
 		if (!device) {
 			return JSON.stringify({
 				error:
@@ -638,11 +782,18 @@ export async function getActionHistory(env: Env): Promise<string> {
 /** The most recently seen paired device, if there is one. */
 async function getPairedDevice(
 	env: Env,
+	ownerId?: string | null,
 ): Promise<{ id: string; name: string | null } | null> {
 	if (!env.DB) return null;
-	const row = await env.DB.prepare(
-		"SELECT id, name FROM devices WHERE status = 'paired' ORDER BY last_seen DESC LIMIT 1",
-	).first<{ id: string; name: string | null }>();
+	const row = ownerId
+		? await env.DB.prepare(
+				"SELECT id, name FROM devices WHERE status = 'paired' AND owner_id = ?1 ORDER BY last_seen DESC LIMIT 1",
+			)
+				.bind(ownerId)
+				.first<{ id: string; name: string | null }>()
+		: await env.DB.prepare(
+				"SELECT id, name FROM devices WHERE status = 'paired' ORDER BY last_seen DESC LIMIT 1",
+			).first<{ id: string; name: string | null }>();
 	return row ?? null;
 }
 
@@ -665,12 +816,13 @@ export async function runDeviceCommand(
 	env: Env,
 	action: string,
 	args: Record<string, unknown>,
+	ownerId?: string | null,
 ): Promise<string> {
 	try {
 		if (!env.DB) {
 			return JSON.stringify({ error: "Device memory is unavailable." });
 		}
-		const device = await getPairedDevice(env);
+		const device = await getPairedDevice(env, ownerId);
 		if (!device) {
 			return JSON.stringify({
 				error:
@@ -798,9 +950,9 @@ export async function runDeviceCommand(
 			commandId = existing.id;
 		} else {
 			const inserted = await env.DB.prepare(
-				"INSERT INTO device_commands (device_id, kind, payload, status, created_at) VALUES (?1, ?2, ?3, 'pending', ?4) RETURNING id",
+				"INSERT INTO device_commands (device_id, kind, payload, status, created_at, owner_id) VALUES (?1, ?2, ?3, 'pending', ?4, ?5) RETURNING id",
 			)
-				.bind(device.id, action, payloadJson, now)
+				.bind(device.id, action, payloadJson, now, ownerId ?? null)
 				.first<{ id: number }>();
 			if (!inserted) {
 				return JSON.stringify({ error: "Could not queue the command." });
