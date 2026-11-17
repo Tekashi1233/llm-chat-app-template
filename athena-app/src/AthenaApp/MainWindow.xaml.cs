@@ -81,6 +81,47 @@ public partial class MainWindow : Window
         _chatView.RenderConversation();
         _chatView.FocusInput();
         ShowIslandIfEnabled();
+        InitialiseVoice();
+    }
+
+    /// <summary>
+    /// N4: load saved voice preferences and start the SAPI service.
+    /// Never throws — a machine without SAPI, voices or a mic just
+    /// gets voice controls disabled with an honest explanation.
+    /// </summary>
+    private void InitialiseVoice()
+    {
+        _state.VoiceSettingsDir = IslandStoreDir;
+        _state.VoiceSettings =
+            VoiceSettingsStore.Load(IslandStoreDir)?.Clamped()
+            ?? VoiceSettings.Defaults;
+        try
+        {
+            var voice = new VoiceService();
+            voice.ApplySettings(_state.VoiceSettings);
+            voice.SpeakingStarted += () =>
+                _state.SetIslandState(IslandState.Speaking, IslandTriggerSource.Voice, "Speaking…");
+            voice.SpeakingFinished += () =>
+            {
+                if (_state.IslandStatus.State == IslandState.Speaking)
+                    _state.SetIslandState(IslandState.Idle, IslandTriggerSource.Voice, "Idle");
+            };
+            voice.ListeningStarted += () =>
+                _state.SetIslandState(IslandState.Listening, IslandTriggerSource.Voice, "Listening…");
+            voice.ListeningStopped += () =>
+            {
+                if (_state.IslandStatus.State == IslandState.Listening)
+                    _state.SetIslandState(IslandState.Idle, IslandTriggerSource.Voice, "Idle");
+            };
+            _state.Voice = voice;
+            _chatView.RefreshVoiceControls();
+        }
+        catch (Exception)
+        {
+            // Voice stays unavailable; the app works without it.
+            _state.Voice = null;
+            _chatView.RefreshVoiceControls();
+        }
     }
 
     /// <summary>
@@ -113,6 +154,8 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        // Stop any speech/recognition first, then save the Island.
+        try { _state.Voice?.Dispose(); } catch (Exception) { }
         if (_island is not null)
         {
             _island.SavePosition();

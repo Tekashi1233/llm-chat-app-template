@@ -281,6 +281,104 @@ Check("island store: corrupt file returns null",
     IslandPositionStore.Load(tmpIslandDir) is null);
 Directory.Delete(tmpIslandDir, recursive: true);
 
+// ---------- N4: Voice selection policy ----------
+var fakeVoices = new[]
+{
+    new VoiceInfo("Microsoft David Desktop", "en-US", VoiceGender.Male),
+    new VoiceInfo("Microsoft Hazel Desktop", "en-GB", VoiceGender.Female),
+    new VoiceInfo("Microsoft George", "en-GB", VoiceGender.Male),
+    new VoiceInfo("Microsoft Sonia Online", "en-GB", VoiceGender.Female),
+};
+Eq("voice: prefers Hazel over other en-GB voices",
+    VoiceSelection.Pick(fakeVoices, null)?.Name, "Microsoft Hazel Desktop");
+Eq("voice: saved name wins when installed",
+    VoiceSelection.Pick(fakeVoices, "Microsoft Sonia Online")?.Name, "Microsoft Sonia Online");
+Eq("voice: saved name ignored when not installed",
+    VoiceSelection.Pick(fakeVoices, "No Such Voice")?.Name, "Microsoft Hazel Desktop");
+var noHazel = new[]
+{
+    new VoiceInfo("Microsoft David Desktop", "en-US", VoiceGender.Male),
+    new VoiceInfo("Microsoft George", "en-GB", VoiceGender.Male),
+    new VoiceInfo("Microsoft Sonia Online", "en-GB", VoiceGender.Female),
+};
+Eq("voice: female en-GB when no Hazel",
+    VoiceSelection.Pick(noHazel, null)?.Name, "Microsoft Sonia Online");
+var maleGbOnly = new[]
+{
+    new VoiceInfo("Microsoft David Desktop", "en-US", VoiceGender.Male),
+    new VoiceInfo("Microsoft George", "en-GB", VoiceGender.Male),
+};
+Eq("voice: any en-GB when no female en-GB",
+    VoiceSelection.Pick(maleGbOnly, null)?.Name, "Microsoft George");
+var femaleUsOnly = new[]
+{
+    new VoiceInfo("Microsoft Zira Desktop", "en-US", VoiceGender.Female),
+    new VoiceInfo("Microsoft David Desktop", "en-US", VoiceGender.Male),
+};
+Eq("voice: any female voice when no en-GB",
+    VoiceSelection.Pick(femaleUsOnly, null)?.Name, "Microsoft Zira Desktop");
+var maleUsOnly = new[]
+{
+    new VoiceInfo("Microsoft David Desktop", "en-US", VoiceGender.Male),
+};
+Eq("voice: first voice as system default fallback",
+    VoiceSelection.Pick(maleUsOnly, null)?.Name, "Microsoft David Desktop");
+Check("voice: no voices returns null",
+    VoiceSelection.Pick(Array.Empty<VoiceInfo>(), null) is null);
+var ordered = VoiceSelection.OrderForDisplay(fakeVoices);
+Eq("voice: display order puts female en-GB first",
+    ordered[0].Name, "Microsoft Hazel Desktop");
+Check("voice: display order puts en-GB before en-US",
+    ordered[^1].CultureName == "en-US");
+Check("voice: en-GB detection",
+    VoiceSelection.IsEnGb("en-GB") && VoiceSelection.IsEnGb("en-GB-x1")
+    && !VoiceSelection.IsEnGb("en-US"));
+
+// ---------- N4: Voice settings round-trip ----------
+var tmpVoiceDir = Path.Combine(
+    Path.GetTempPath(), "athena-voice-test-" + Guid.NewGuid().ToString("N"));
+Check("voice settings: missing file returns null",
+    VoiceSettingsStore.Load(tmpVoiceDir) is null);
+var savedSettings = new VoiceSettings(
+    OutputEnabled: true, VoiceName: "Microsoft Hazel Desktop",
+    Rate: -2, Volume: 80, MicEnabled: false, RecognitionCulture: "en-GB");
+VoiceSettingsStore.Save(tmpVoiceDir, savedSettings);
+var loadedSettings = VoiceSettingsStore.Load(tmpVoiceDir);
+Check("voice settings: round-trip",
+    loadedSettings is not null && loadedSettings.OutputEnabled
+    && loadedSettings.VoiceName == "Microsoft Hazel Desktop"
+    && loadedSettings.Rate == -2 && loadedSettings.Volume == 80
+    && !loadedSettings.MicEnabled
+    && loadedSettings.RecognitionCulture == "en-GB");
+var outOfRange = new VoiceSettings(
+    OutputEnabled: false, VoiceName: null, Rate: 99,
+    Volume: 500, MicEnabled: true, RecognitionCulture: "");
+var clampedSettings = outOfRange.Clamped();
+Check("voice settings: rate/volume clamped",
+    clampedSettings.Rate == 10 && clampedSettings.Volume == 100
+    && clampedSettings.RecognitionCulture == "en-GB");
+Check("voice settings: defaults are output-off",
+    VoiceSettings.Defaults is { OutputEnabled: false, Rate: 0, Volume: 100, MicEnabled: true });
+File.WriteAllText(Path.Combine(tmpVoiceDir, "voice.json"), "{ not json");
+Check("voice settings: corrupt file returns null",
+    VoiceSettingsStore.Load(tmpVoiceDir) is null);
+Directory.Delete(tmpVoiceDir, recursive: true);
+
+// ---------- N4: Voice-source Island transitions ----------
+var voiceMachine = new IslandStateMachine();
+Check("voice island: Voice can set Listening",
+    voiceMachine.TrySet(IslandState.Listening, IslandTriggerSource.Voice, "Listening…"));
+Check("voice island: Voice can set Speaking from Listening",
+    voiceMachine.TrySet(IslandState.Speaking, IslandTriggerSource.Voice, "Speaking…"));
+Check("voice island: Speaking returns to Idle",
+    voiceMachine.TrySet(IslandState.Idle, IslandTriggerSource.Voice, "Idle"));
+Check("voice island: Chat cannot set Speaking",
+    !voiceMachine.TrySet(IslandState.Speaking, IslandTriggerSource.Chat, "Speaking…"));
+Check("voice island: System cannot set Listening",
+    !voiceMachine.TrySet(IslandState.Listening, IslandTriggerSource.System, "Listening…"));
+Check("voice island: Voice can set Offline",
+    voiceMachine.TrySet(IslandState.Offline, IslandTriggerSource.Voice, "Offline"));
+
 // ---------- Live backend (only with ATHENA_TEST_KEY) ----------
 var liveKey = Environment.GetEnvironmentVariable("ATHENA_TEST_KEY");
 if (!string.IsNullOrWhiteSpace(liveKey))
@@ -426,6 +524,33 @@ else
     var settingsCs = File.ReadAllText(Path.Combine(appDir, "Views", "SettingsView.xaml.cs"));
     Check("island: Settings can show the Island",
         settingsCs.Contains("RequestShowIsland()"));
+
+    // N4 voice wiring (structural: SAPI itself needs Windows).
+    Check("voice: System.Speech referenced",
+        csprojText.Contains("<PackageReference Include=\"System.Speech\""));
+    Check("voice: VoiceService exists",
+        File.Exists(Path.Combine(appDir, "Services", "VoiceService.cs")));
+    var chatViewXaml = File.ReadAllText(Path.Combine(appDir, "Views", "ChatView.xaml"));
+    Check("voice: ChatView has a Mic button",
+        chatViewXaml.Contains("x:Name=\"MicButton\""));
+    Check("voice: ChatView has a voice toggle",
+        chatViewXaml.Contains("x:Name=\"VoiceToggleButton\""));
+    Check("voice: ChatView has a listening indicator",
+        chatViewXaml.Contains("x:Name=\"ListeningText\""));
+    Check("voice: ChatView speaks replies when enabled",
+        chatViewCs.Contains("Voice?.Speak(reply)"));
+    Check("voice: ChatView interrupts speech on send",
+        chatViewCs.Contains("Voice?.StopSpeaking()"));
+    Check("voice: recognised text goes to the input box, never auto-sent",
+        chatViewCs.Contains("InputBox.Text = text"));
+    Check("voice: Settings has a real Voice section",
+        settingsCs.Contains("VoiceSelection.Pick"));
+    Check("voice: Settings persists voice preferences",
+        settingsCs.Contains("SaveVoiceSettings()"));
+    Check("voice: MainWindow creates the voice service",
+        mainCs.Contains("new VoiceService()"));
+    Check("voice: MainWindow disposes voice on close",
+        mainCs.Contains("Voice?.Dispose()"));
 }
 
 Console.WriteLine($"\n{passes} passed, {failures.Count} failed");

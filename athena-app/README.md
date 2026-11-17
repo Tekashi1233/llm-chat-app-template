@@ -1,12 +1,13 @@
-# ATHENA — Native Windows App (N1 shell + N2 Command Centre + N3 Dynamic Island)
+# ATHENA — Native Windows App (N1 shell + N2 Command Centre + N3 Dynamic Island + N4 Voice)
 
 A genuine, Chrome-free native Windows desktop app (C# + WPF, .NET 8)
 that chats with the existing ATHENA backend — the Cloudflare Worker
 that used to be VESPER. N1 built the minimal shell; N2 expanded it
-into the full Command Centre; **N3 adds the floating Dynamic
-Island**: a small pill that shows what ATHENA is doing (idle,
-thinking, offline, error), expands to the last reply, and opens
-the Centre. Voice (N4) comes later.
+into the full Command Centre; N3 added the floating Dynamic
+Island; **N4 adds native voice**: female British speech output
+(SAPI, Hazel preferred) and microphone input, with the Island's
+Listening/Speaking states wired to real voice events. Companion
+integration and owner auth (N5) come later.
 
 ## What N1 is (and is not)
 
@@ -91,29 +92,39 @@ DPAPI round-trip tests run on Windows only and are skipped on Linux
 with a note. The WPF window itself can only be launched on Windows —
 the UI launch test belongs on the real laptop.
 
-## Known limitations (N3)
+## Known limitations (N4)
 
-- The Island shows only states real events produce: Idle,
-  Thinking (a chat request in flight), Offline (connection
-  failure), Error (a failed request). Listening/Speaking need
-  voice (N4); Working/Approval need Companion device activity
-  (N5) — the state machine exists and refuses anyone else
-  asking for those states.
+- Voice depends on what Windows has installed on the laptop:
+  the voice list is enumerated at runtime and the default is
+  picked by policy (saved voice → Hazel → female en-GB → any
+  en-GB → any female → first installed). Hazel may or may not
+  be present; Sonia Online needs network. If no voices exist,
+  voice output is honestly unavailable, not faked.
+- Speech recognition needs a recognizer (en-GB preferred,
+  en-US fallback) and a working microphone. If either is
+  missing, the Mic button is disabled with an explanation.
+  Recognised text always goes into the message box for the
+  user to check — nothing is ever auto-sent, and the mic is
+  never on unless tapped. No wake-word, no background
+  listening.
+- The Island shows only states real events produce; N4 wires
+  Listening/Speaking to real voice events. Working/Approval
+  still need Companion device activity (N5).
 - The Island shares the Centre's AppState, so it shows the same
   conversation and backend — no second client, no second memory.
-- No voice yet (N4). No tray icon, no startup-on-boot, no
-  notifications (N6). No device commands from this app yet — the
-  Companion still owns those (N5).
+- No tray icon, no startup-on-boot, no notifications (N6). No
+  device commands from this app yet — the Companion still owns
+  those (N5).
 - The exe is unsigned (SmartScreen warning, see above).
 - Conversation history is server-side per conversation id; the app
   keeps the session's messages in memory only.
 - If the laptop is offline, the app shows Offline and sending fails
   with a plain error — it does not queue messages (N6).
 
-## What remains for N4
+## What remains for N5
 
-Female British voice + native voice interaction: runtime voice
-detection (Hazel/Sonia), voice selection in Settings, speech
-input with a visible mic indicator, interruptible speech, and
-the Island's Listening/Speaking states wired to real voice
-events.
+Companion integration + owner authentication: device status,
+approvals and activity inside the Centre and Island, DPAPI
+protection for device credentials, and per-user login to
+replace the shared site key. Family access waits until after
+that.

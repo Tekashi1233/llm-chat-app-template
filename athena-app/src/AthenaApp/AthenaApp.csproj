@@ -28,6 +28,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Athena.Core\Athena.Core.csproj" />
+    <!-- N4 voice: SAPI via System.Speech 8.0.0 (net8.0-windows).
+         The .nupkg lives in ~/nuget-local/; restore uses the
+         local-only NuGet source because nuget.org hangs through
+         this VM's proxy. -->
+    <PackageReference Include="System.Speech" Version="8.0.0" />
     <!-- The window Icon="icon.png" in MainWindow.xaml resolves this as a
          WPF resource at runtime. It must be a PNG: the ICO PIL wrote was
          PNG-compressed throughout and WPF's decoder rejects it, which

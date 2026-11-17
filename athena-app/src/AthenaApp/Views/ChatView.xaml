@@ -31,11 +31,17 @@
       <StackPanel x:Name="MessagesPanel"/>
     </ScrollViewer>
 
-    <!-- Thinking indicator -->
-    <TextBlock Grid.Row="2" x:Name="ThinkingText" Text="Athena is thinking…"
-               FontSize="13" FontStyle="Italic"
-               Foreground="{StaticResource BrushMuted}"
-               Margin="16,0,16,8" Visibility="Collapsed"/>
+    <!-- Thinking / listening indicators -->
+    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="16,0,16,8">
+      <TextBlock x:Name="ThinkingText" Text="Athena is thinking…"
+                 FontSize="13" FontStyle="Italic"
+                 Foreground="{StaticResource BrushMuted}"
+                 Visibility="Collapsed"/>
+      <TextBlock x:Name="ListeningText" Text="Listening… speak now, or tap Stop."
+                 FontSize="13" FontStyle="Italic"
+                 Foreground="{StaticResource BrushGold}"
+                 Margin="16,0,0,0" Visibility="Collapsed"/>
+    </StackPanel>
 
     <!-- Input bar -->
     <Border Grid.Row="3" Background="{StaticResource BrushPanel}"
@@ -45,10 +51,20 @@
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <TextBox x:Name="InputBox" Grid.Column="0" Margin="0,0,12,0"
                  KeyDown="InputBox_KeyDown"/>
-        <Button x:Name="SendButton" Grid.Column="1" Content="Send"
+        <Button x:Name="MicButton" Grid.Column="1" Content="Mic"
+                Margin="0,0,8,0" Padding="10,4" IsEnabled="False"
+                Click="MicButton_Click"
+                ToolTip="Tap to speak — your words go into the box for you to check before sending."/>
+        <Button x:Name="VoiceToggleButton" Grid.Column="2" Content="Voice: Off"
+                Margin="0,0,8,0" Padding="10,4" IsEnabled="False"
+                Click="VoiceToggleButton_Click"
+                ToolTip="Read replies aloud with the female British voice. Off by default."/>
+        <Button x:Name="SendButton" Grid.Column="3" Content="Send"
                 Click="SendButton_Click"/>
       </Grid>
     </Border>

@@ -69,10 +69,152 @@ public partial class SettingsView : UserControl, IRefreshable
         }
         ContentPanel.Children.Add(modelCard);
 
-        // Voice (N4 placeholder).
+        // Voice (N4): real controls. Output is OFF by default;
+        // everything persists to voice.json on change.
         var voiceCard = ViewHelpers.Card("Voice", out var voiceBody);
-        voiceBody.Children.Add(ViewHelpers.BodyText(
-            "Voice arrives in N4 — female British voice, speech input and output. Nothing to set up yet."));
+        var voiceSvc = state.Voice;
+        if (voiceSvc is null || !voiceSvc.IsAvailable)
+        {
+            voiceBody.Children.Add(ViewHelpers.BodyText(
+                "Voice output isn't available on this PC — no speech synthesis voices were found. " +
+                "Chat still works; only the spoken replies and microphone are missing."));
+        }
+        else
+        {
+            // Voice picker: installed voices, female en-GB first.
+            var installed = voiceSvc.InstalledVoices;
+            voiceBody.Children.Add(ViewHelpers.BodyText("Voice"));
+            var voiceCombo = new ComboBox
+            {
+                HorizontalAlignment = HorizontalAlignment.Left,
+                MinWidth = 260,
+                Margin = new Thickness(0, 2, 0, 8),
+            };
+            var displayNames = installed
+                .Select(v => $"{v.Name} ({v.CultureName})")
+                .ToList();
+            voiceCombo.ItemsSource = displayNames;
+            var current = VoiceSelection.Pick(installed, state.VoiceSettings.VoiceName);
+            var currentIndex = current is null ? -1 : installed.ToList().IndexOf(current);
+            voiceCombo.SelectedIndex = currentIndex;
+            voiceCombo.SelectionChanged += (_, _) =>
+            {
+                var idx = voiceCombo.SelectedIndex;
+                if (idx < 0 || idx >= installed.Count) return;
+                _state.VoiceSettings = _state.VoiceSettings with
+                {
+                    VoiceName = installed[idx].Name,
+                };
+                _state.SaveVoiceSettings();
+                voiceSvc.ApplySettings(_state.VoiceSettings);
+            };
+            voiceBody.Children.Add(voiceCombo);
+
+            // Speed slider (-10..10).
+            var speedLabel = ViewHelpers.BodyText(
+                $"Speed: {state.VoiceSettings.Rate} (0 is normal)");
+            voiceBody.Children.Add(speedLabel);
+            var speedSlider = new Slider
+            {
+                Minimum = -10, Maximum = 10,
+                Value = state.VoiceSettings.Rate,
+                Width = 260, HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new Thickness(0, 2, 0, 8),
+                TickFrequency = 1, IsSnapToTickEnabled = true,
+            };
+            speedSlider.ValueChanged += (_, e) =>
+            {
+                var rate = (int)Math.Round(e.NewValue);
+                speedLabel.Text = $"Speed: {rate} (0 is normal)";
+                _state.VoiceSettings = _state.VoiceSettings with { Rate = rate };
+                _state.SaveVoiceSettings();
+                voiceSvc.ApplySettings(_state.VoiceSettings);
+            };
+            voiceBody.Children.Add(speedSlider);
+
+            // Volume slider (0..100).
+            var volumeLabel = ViewHelpers.BodyText(
+                $"Volume: {state.VoiceSettings.Volume}");
+            voiceBody.Children.Add(volumeLabel);
+            var volumeSlider = new Slider
+            {
+                Minimum = 0, Maximum = 100,
+                Value = state.VoiceSettings.Volume,
+                Width = 260, HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new Thickness(0, 2, 0, 8),
+                TickFrequency = 5, IsSnapToTickEnabled = true,
+            };
+            volumeSlider.ValueChanged += (_, e) =>
+            {
+                var volume = (int)Math.Round(e.NewValue);
+                volumeLabel.Text = $"Volume: {volume}";
+                _state.VoiceSettings = _state.VoiceSettings with { Volume = volume };
+                _state.SaveVoiceSettings();
+                voiceSvc.ApplySettings(_state.VoiceSettings);
+            };
+            voiceBody.Children.Add(volumeSlider);
+
+            // Output toggle.
+            var outputCheck = new CheckBox
+            {
+                Content = "Read replies aloud",
+                IsChecked = state.VoiceSettings.OutputEnabled,
+                Margin = new Thickness(0, 2, 0, 4),
+            };
+            outputCheck.Checked += (_, _) => SetOutputEnabled(true);
+            outputCheck.Unchecked += (_, _) => SetOutputEnabled(false);
+            voiceBody.Children.Add(outputCheck);
+
+            // Test button: speaks a sample with the current voice,
+            // even when read-aloud is off (it is an explicit test).
+            var testButton = new Button
+            {
+                Content = "Test voice",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Padding = new Thickness(10, 4, 10, 4),
+                Margin = new Thickness(0, 4, 0, 8),
+            };
+            testButton.Click += (_, _) =>
+                voiceSvc.Speak("Hello, I am ATHENA, your personal assistant.");
+            voiceBody.Children.Add(testButton);
+
+            void SetOutputEnabled(bool on)
+            {
+                _state.VoiceSettings = _state.VoiceSettings with { OutputEnabled = on };
+                _state.SaveVoiceSettings();
+                if (!on) voiceSvc.StopSpeaking();
+            }
+        }
+
+        // Microphone input.
+        voiceBody.Children.Add(ViewHelpers.BodyText("Microphone"));
+        if (voiceSvc is null || !voiceSvc.IsRecognizerAvailable)
+        {
+            voiceBody.Children.Add(ViewHelpers.MutedText(
+                "Microphone input isn't available on this PC — no speech recognizer or microphone was found."));
+        }
+        else
+        {
+            voiceBody.Children.Add(ViewHelpers.BodyText(
+                $"Speech recognition: {voiceSvc.RecognizerCultureName}"));
+            var micCheck = new CheckBox
+            {
+                Content = "Microphone input enabled",
+                IsChecked = state.VoiceSettings.MicEnabled,
+                Margin = new Thickness(0, 2, 0, 0),
+            };
+            micCheck.Checked += (_, _) => SetMicEnabled(true);
+            micCheck.Unchecked += (_, _) => SetMicEnabled(false);
+            voiceBody.Children.Add(micCheck);
+            voiceBody.Children.Add(ViewHelpers.MutedText(
+                "Tap Mic in Chat to speak. Your words go into the message box for you to check — nothing is sent automatically, and the microphone is never on unless you tap it."));
+
+            void SetMicEnabled(bool on)
+            {
+                _state.VoiceSettings = _state.VoiceSettings with { MicEnabled = on };
+                _state.SaveVoiceSettings();
+            }
+        }
         ContentPanel.Children.Add(voiceCard);
 
         // Island (N3).
@@ -140,7 +282,7 @@ public partial class SettingsView : UserControl, IRefreshable
         // About.
         var aboutCard = ViewHelpers.Card("About", out var aboutBody);
         aboutBody.Children.Add(ViewHelpers.BodyText(
-            "ATHENA — N3 Command Centre + Dynamic Island. Native Windows app, C# + WPF + .NET 8. Backend: Cloudflare Worker + GPT-OSS-20B + D1."));
+            "ATHENA — N4 Command Centre + Dynamic Island + Voice. Native Windows app, C# + WPF + .NET 8. Backend: Cloudflare Worker + GPT-OSS-20B + D1."));
         ContentPanel.Children.Add(aboutCard);
     }
 

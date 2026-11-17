@@ -20,6 +20,7 @@ public partial class ChatView : UserControl, IRefreshable
     private readonly AppState _state;
     private readonly Action<string, Color> _setStatus;
     private bool _sending;
+    private bool _voiceWired;
 
     public ChatView(AppState state, Action<string, Color> setStatus)
     {
@@ -27,6 +28,96 @@ public partial class ChatView : UserControl, IRefreshable
         _setStatus = setStatus;
         InitializeComponent();
         _state.ConversationChanged += RenderConversation;
+    }
+
+    /// <summary>
+    /// N4: refresh the mic + voice-toggle buttons from the live
+    /// voice service (called by MainWindow once SAPI is up, and
+    /// after any voice setting change). Wires the recognition
+    /// callbacks once. When no voice service exists, both buttons
+    /// stay disabled — the app never pretends voice works.
+    /// </summary>
+    public void RefreshVoiceControls()
+    {
+        var voice = _state.Voice;
+        var outputAvailable = voice is not null && voice.IsAvailable;
+        VoiceToggleButton.IsEnabled = outputAvailable;
+        VoiceToggleButton.Content = _state.VoiceSettings.OutputEnabled ? "Voice: On" : "Voice: Off";
+        MicButton.IsEnabled = voice is not null && voice.IsRecognizerAvailable
+            && _state.VoiceSettings.MicEnabled;
+        if (!_voiceWired && voice is not null)
+        {
+            _voiceWired = true;
+            voice.Recognized += text =>
+            {
+                InputBox.Text = text;
+                InputBox.CaretIndex = text.Length;
+                FocusInput();
+            };
+            voice.ListeningStopped += () =>
+            {
+                MicButton.Content = "Mic";
+                ListeningText.Visibility = Visibility.Collapsed;
+            };
+        }
+    }
+
+    private void MicButton_Click(object sender, RoutedEventArgs e)
+    {
+        var voice = _state.Voice;
+        if (voice is null || !voice.IsRecognizerAvailable)
+        {
+            AddSystemMessage(
+                "Microphone input isn't available on this PC — no speech recognizer or microphone was found.",
+                isError: true);
+            MicButton.IsEnabled = false;
+            return;
+        }
+        if (!_state.VoiceSettings.MicEnabled)
+        {
+            AddSystemMessage(
+                "Microphone input is off — turn it on in Settings → Voice.",
+                isError: false);
+            return;
+        }
+        if (voice.IsListening)
+        {
+            voice.StopListening();
+            return;
+        }
+        voice.StopSpeaking();
+        if (voice.StartListening())
+        {
+            MicButton.Content = "Stop";
+            ListeningText.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            AddSystemMessage(
+                "Couldn't start listening — check the microphone and try again.",
+                isError: true);
+        }
+    }
+
+    private void VoiceToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        var voice = _state.Voice;
+        if (voice is null || !voice.IsAvailable)
+        {
+            AddSystemMessage(
+                "Voice output isn't available on this PC — no speech voices were found.",
+                isError: true);
+            VoiceToggleButton.IsEnabled = false;
+            return;
+        }
+        _state.VoiceSettings = _state.VoiceSettings with
+        {
+            OutputEnabled = !_state.VoiceSettings.OutputEnabled,
+        };
+        _state.SaveVoiceSettings();
+        if (!_state.VoiceSettings.OutputEnabled)
+            voice.StopSpeaking();
+        RefreshVoiceControls();
     }
 
     /// <summary>Chat manages itself; MainWindow does not await this.</summary>
@@ -88,6 +179,8 @@ public partial class ChatView : UserControl, IRefreshable
         InputBox.Text = "";
         AddMessage("You", text.Trim(), isUser: true);
         ThinkingText.Visibility = Visibility.Visible;
+        // N4: a new message interrupts any speech in progress.
+        _state.Voice?.StopSpeaking();
         _state.SetIslandState(IslandState.Thinking, IslandTriggerSource.Chat, "Thinking…");
 
         try
@@ -97,6 +190,9 @@ public partial class ChatView : UserControl, IRefreshable
             AddMessage("ATHENA", reply, isUser: false);
             _state.SetLastReply(reply);
             _state.SetIslandState(IslandState.Idle, IslandTriggerSource.Chat, "Idle");
+            // N4: read the reply aloud only when the user turned voice output on.
+            if (_state.VoiceSettings.OutputEnabled)
+                _state.Voice?.Speak(reply);
         }
         catch (AthenaApiException ex)
         {

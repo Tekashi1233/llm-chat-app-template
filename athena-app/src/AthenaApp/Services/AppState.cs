@@ -56,6 +56,24 @@ public sealed class AppState
 
     public void RequestShowIsland() => ShowIslandRequested?.Invoke();
 
+    // ----- Voice (N4) -----
+    // The service is created by MainWindow (it needs the UI thread
+    // for SAPI) and may be null when SAPI is unavailable — views
+    // must check before offering voice controls.
+    public VoiceService? Voice { get; set; }
+
+    /// <summary>Voice preferences, loaded from voice.json at startup. Output OFF by default.</summary>
+    public VoiceSettings VoiceSettings { get; set; } = VoiceSettings.Defaults;
+
+    /// <summary>Directory holding voice.json (set by MainWindow; %APPDATA%\Athena).</summary>
+    public string VoiceSettingsDir { get; set; } = "";
+
+    public void SaveVoiceSettings()
+    {
+        if (!string.IsNullOrWhiteSpace(VoiceSettingsDir))
+            VoiceSettingsStore.Save(VoiceSettingsDir, VoiceSettings);
+    }
+
     public void OpenConversation(string id)
     {
         ConversationId = id;
