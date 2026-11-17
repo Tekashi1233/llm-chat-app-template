@@ -207,6 +207,33 @@ function toMemory(row: MemoryRow, conversationId: string): Memory {
 }
 
 /**
+ * Lists every stored memory for one conversation, newest first.
+ * Read-only list for the N2 Memory Vault (GET /api/memories).
+ * Scoped to the conversation id, like all of P2-M1: memories never
+ * carry across browsers or devices. Deleted rows are gone
+ * (hard-deleted), so only active + superseded rows are returned.
+ * Never throws: on any failure it returns [] and the Vault shows
+ * an empty state instead of breaking the app.
+ */
+export async function listMemories(
+	env: Env,
+	conversationId: string,
+): Promise<Memory[]> {
+	if (!env.DB) return [];
+	try {
+		const rows = await env.DB.prepare(
+			"SELECT id, kind, topic, fact, project, source, created_at, updated_at, superseded_by, status FROM memories " +
+				"WHERE conversation_id = ?1 AND status != 'deleted' ORDER BY updated_at DESC LIMIT 200",
+		)
+			.bind(conversationId)
+			.all<MemoryRow>();
+		return (rows.results ?? []).map((row) => toMemory(row, conversationId));
+	} catch {
+		return [];
+	}
+}
+
+/**
  * Builds the message list the model sees: the canonical system
  * prompt (with the memory block), the remembered history, then the
  * new user message(s).

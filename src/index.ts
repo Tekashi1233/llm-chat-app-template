@@ -13,6 +13,7 @@ import { handleDevicesRequest } from "./devices";
 import {
 	buildModelMessages,
 	formatMemoriesForPrompt,
+	listMemories,
 	loadMemories,
 	redactCredentials,
 } from "./memory";
@@ -241,6 +242,16 @@ export default {
 				return new Response("Method not allowed", { status: 405 });
 			}
 			return handleBackupRequest(request, env);
+		}
+
+		if (url.pathname === "/api/memories") {
+			// Read-only memory list for the N2 Memory Vault. GET
+			// only, site key + rate limit, scoped to the
+			// conversation_id query parameter.
+			if (request.method !== "GET") {
+				return new Response("Method not allowed", { status: 405 });
+			}
+			return handleMemoriesRequest(request, env);
 		}
 
 		if (url.pathname.startsWith("/api/devices/")) {
@@ -563,6 +574,69 @@ export async function handleChatRequest(
  * Exports the whole D1 memory table as JSON. Same protection as
  * chat: rate limit first, then the API key. GET only.
  */
+/**
+ * GET /api/memories?conversation_id=… — read-only list of one
+ * conversation's stored memories for the N2 Memory Vault. Same
+ * auth and rate limit as /api/backup. No writes, no schema change:
+ * listMemories reads the existing P2-M1 memories table.
+ */
+async function handleMemoriesRequest(
+	request: Request,
+	env: Env,
+): Promise<Response> {
+	const jsonHeaders = {
+		"content-type": "application/json",
+		"Access-Control-Allow-Origin": "*",
+	};
+	try {
+		const limit = await checkRateLimit(request, env);
+		if (!limit.ok) {
+			return new Response(
+				JSON.stringify({
+					error: "Too many requests. Please wait a minute and try again.",
+				}),
+				{
+					status: 429,
+					headers: {
+						...jsonHeaders,
+						"Retry-After": String(limit.retryAfter ?? 60),
+					},
+				},
+			);
+		}
+		const auth = await checkAuth(request, env);
+		if (!auth.ok) {
+			return new Response(JSON.stringify({ error: "Unauthorized" }), {
+				status: 401,
+				headers: jsonHeaders,
+			});
+		}
+		const conversationId =
+			new URL(request.url).searchParams.get("conversation_id") ?? "";
+		if (!conversationId) {
+			return new Response(
+				JSON.stringify({ error: "conversation_id is required" }),
+				{ status: 400, headers: jsonHeaders },
+			);
+		}
+		const memories = await listMemories(env, conversationId);
+		return new Response(
+			JSON.stringify({
+				conversation_id: conversationId,
+				count: memories.length,
+				memories,
+			}),
+			{ headers: jsonHeaders },
+		);
+	} catch (error) {
+		console.error("Error processing memories request:", error);
+		return new Response(JSON.stringify({ error: "Failed to list memories" }), {
+			status: 500,
+			headers: jsonHeaders,
+		});
+	}
+}
+
 async function handleBackupRequest(
 	request: Request,
 	env: Env,

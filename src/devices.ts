@@ -13,6 +13,8 @@
  * - GET  /api/devices/commands  (device secret) fetch pending commands (empty in M1)
  * - POST /api/devices/result    (device secret) report a command result
  * - POST /api/devices/revoke    (device secret) unpair the device: status 'revoked',
+ * - GET  /api/devices/status    (site key)  latest paired device heartbeat, for the N2 dashboard
+ * - GET  /api/devices/activity  (site key)  latest paired device audit rows, for the N2 timeline
  *   pending commands cleared, so the app stops and chat sees no laptop
  *
  * Pair/confirm use the site key and the normal rate limit, because
@@ -138,6 +140,12 @@ export async function handleDevicesRequest(
 		if (path === "/api/devices/revoke" && request.method === "POST") {
 			return handleRevoke(request, env);
 		}
+		if (path === "/api/devices/status" && request.method === "GET") {
+			return handleDeviceStatus(request, env);
+		}
+		if (path === "/api/devices/activity" && request.method === "GET") {
+			return handleDeviceActivity(request, env);
+		}
 		return json({ error: "Not found" }, 404);
 	} catch (error) {
 		console.error("Device request failed:", error);
@@ -174,6 +182,66 @@ async function readBody(request: Request): Promise<Record<string, unknown>> {
 	} catch {
 		return {};
 	}
+}
+
+/**
+ * GET /api/devices/status — the paired laptop's latest heartbeat,
+ * for the N2 Devices dashboard. Site key + rate limit, read-only.
+ * Returns exactly what getDeviceStatus() already builds for the
+ * model — no new logic, no new data.
+ */
+async function handleDeviceStatus(
+	request: Request,
+	env: Env,
+): Promise<Response> {
+	const denied = await requireSiteAccess(request, env);
+	if (denied) return denied;
+	const status = await getDeviceStatus(env);
+	return new Response(status, {
+		headers: {
+			"content-type": "application/json",
+			"Access-Control-Allow-Origin": "*",
+		},
+	});
+}
+
+/**
+ * GET /api/devices/activity?limit=50 — the latest paired device's
+ * audit rows (device_actions), newest first, for the N2 Activity
+ * timeline. Site key + rate limit, read-only. Returns the stored
+ * rows as-is; the app never writes here.
+ */
+async function handleDeviceActivity(
+	request: Request,
+	env: Env,
+): Promise<Response> {
+	const denied = await requireSiteAccess(request, env);
+	if (denied) return denied;
+	if (!env.DB) return json({ device: null, count: 0, actions: [] });
+	const device = await getPairedDevice(env);
+	if (!device) return json({ device: null, count: 0, actions: [] });
+	const wanted = Number(
+		new URL(request.url).searchParams.get("limit") ?? 50,
+	);
+	const limit = Number.isFinite(wanted)
+		? Math.min(100, Math.max(1, Math.floor(wanted)))
+		: 50;
+	const rows = await env.DB.prepare(
+		"SELECT kind, detail, approved, created_at FROM device_actions WHERE device_id = ?1 ORDER BY id DESC LIMIT ?2",
+	)
+		.bind(device.id, limit)
+		.all<{
+			kind: string;
+			detail: string;
+			approved: number;
+			created_at: number;
+		}>();
+	const actions = rows.results ?? [];
+	return json({
+		device: device.name ?? device.id,
+		count: actions.length,
+		actions,
+	});
 }
 
 /**
