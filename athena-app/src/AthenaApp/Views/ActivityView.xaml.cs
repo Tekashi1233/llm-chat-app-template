@@ -19,6 +19,9 @@ public partial class ActivityView : UserControl, IRefreshable
         InitializeComponent();
     }
 
+    private async void RefreshButton_Click(object sender, RoutedEventArgs e) =>
+        await RefreshAsync(_state);
+
     public async Task RefreshAsync(AppState state)
     {
         ContentPanel.Children.Clear();

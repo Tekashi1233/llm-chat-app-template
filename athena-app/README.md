@@ -141,8 +141,15 @@ the UI launch test belongs on the real laptop.
 
 ## What remains for N5
 
-Companion integration + owner authentication: device status,
-approvals and activity inside the menu sections, DPAPI
-protection for device credentials, and per-user login to
-replace the shared site key. Family access waits until after
-that.
+M1 (Companion integration, branch `n5-m1`, not merged): Devices shows the
+live paired laptop with one-tap approved commands (through chat) and an
+Unpair flow; Activity has a Refresh button; device-command turns light
+the reactor Working, and a reply saying a confirmation popup is waiting
+lights Approval. One gap: the app cannot revoke with the site key (the
+Worker answers 401 — revoke needs the device secret), so Unpair guides
+the owner to the Companion tray app; a site-key revoke needs a small
+Worker change and a separate owner approval.
+
+M2 (owner authentication) + M3 (hardening): per-user login to replace
+the shared site key, DPAPI protection for device credentials. Family
+access waits until after that.

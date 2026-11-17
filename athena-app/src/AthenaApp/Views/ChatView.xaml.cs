@@ -171,10 +171,23 @@ public partial class ChatView : UserControl, IRefreshable
         }
     }
 
-    private async Task SendAsync()
+    /// <summary>
+    /// M1: send a device command from the Devices view. The prompt
+    /// must come from DeviceQuickActions; it goes through the normal
+    /// chat path, so the model, the Worker and the Companion enforce
+    /// their allowlists exactly as if the user had typed it.
+    /// </summary>
+    public Task SendDeviceCommandAsync(string prompt)
+    {
+        if (!DeviceQuickActions.IsApprovedPrompt(prompt))
+            return Task.CompletedTask;
+        return SendAsync(prompt, deviceCommand: true);
+    }
+
+    private async Task SendAsync(string? text = null, bool deviceCommand = false)
     {
         if (_sending) return;
-        var text = InputBox.Text;
+        text ??= InputBox.Text;
         if (!MessageValidation.IsValidUserMessage(text)) return;
         if (string.IsNullOrWhiteSpace(_state.ApiKey))
         {
@@ -186,17 +199,30 @@ public partial class ChatView : UserControl, IRefreshable
         SendButton.IsEnabled = false;
         InputBox.Text = "";
         AddMessage("You", text.Trim(), isUser: true);
-        ThinkingText.Visibility = Visibility.Visible;
+        if (!deviceCommand)
+            ThinkingText.Visibility = Visibility.Visible;
         // N4: a new message interrupts any speech in progress.
         _state.Voice?.StopSpeaking();
-        _state.SetPresenceState(PresenceState.Thinking, PresenceSource.Chat, "Thinking…");
+        // M1: a device-command turn shows Working (Device) for the
+        // whole turn — the laptop is the thing doing the work —
+        // instead of Thinking. A normal turn still shows Thinking.
+        if (deviceCommand)
+            _state.SetPresenceState(PresenceState.Working, PresenceSource.Device, "Working on your laptop…");
+        else
+            _state.SetPresenceState(PresenceState.Thinking, PresenceSource.Chat, "Thinking…");
 
         try
         {
             var reply = await _state.Chat.SendMessageAsync(
                 text, _state.ApiKey, _state.ConversationId);
             AddMessage("ATHENA", reply, isUser: false);
-            _state.SetPresenceState(PresenceState.Idle, PresenceSource.Chat, "Idle");
+            // M1: when the reply says a confirmation popup is
+            // waiting on the laptop screen, the reactor shows
+            // Approval — that is real device activity, not a guess.
+            if (deviceCommand && DeviceReplySignals.IsApprovalWaiting(reply))
+                _state.SetPresenceState(PresenceState.Approval, PresenceSource.Device, "Waiting for your approval on the laptop");
+            else
+                _state.SetPresenceState(PresenceState.Idle, PresenceSource.Chat, "Idle");
             ReplyReceived?.Invoke();
             // N4: read the reply aloud only when the user turned voice output on.
             if (_state.VoiceSettings.OutputEnabled)
@@ -228,8 +254,8 @@ public partial class ChatView : UserControl, IRefreshable
             _sending = false;
             InputBox.Focus();
             // If an unexpected error escaped the catches above, never
-            // leave the presence stuck on Thinking.
-            if (_state.PresenceStatus.State == PresenceState.Thinking)
+            // leave the presence stuck on Thinking or Working.
+            if (_state.PresenceStatus.State is PresenceState.Thinking or PresenceState.Working)
                 _state.SetPresenceState(PresenceState.Idle, PresenceSource.Chat, "Idle");
         }
     }

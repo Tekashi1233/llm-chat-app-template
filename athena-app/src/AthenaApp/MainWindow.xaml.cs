@@ -489,7 +489,7 @@ public partial class MainWindow : Window
             "Conversations" => new ConversationsView(_state, _ => CloseOverlay()),
             "Memory Vault" => new MemoryVaultView(_state),
             "Tools" => new ToolsView(_state),
-            "Devices" => new DevicesView(_state),
+            "Devices" => new DevicesView(_state, SendDeviceCommandAsync),
             "Activity" => new ActivityView(_state),
             "Settings" => new SettingsView(_state, async () => await ReconnectAsync()),
             _ => new ToolsView(_state),
@@ -507,6 +507,17 @@ public partial class MainWindow : Window
                 // Views show their own loading/error states inline.
             }
         }
+    }
+
+    /// <summary>
+    /// M1: a device command tapped in the Devices view: close the
+    /// overlay so the user sees the chat, then send it through
+    /// chat (the model routes it to the device tools).
+    /// </summary>
+    private async Task SendDeviceCommandAsync(string prompt)
+    {
+        CloseOverlay();
+        await _chatView.SendDeviceCommandAsync(prompt);
     }
 
     private void OverlayBackButton_Click(object sender, RoutedEventArgs e) => ShowMenu();

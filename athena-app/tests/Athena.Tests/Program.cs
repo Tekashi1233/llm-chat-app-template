@@ -350,6 +350,44 @@ Check("voice presence: System cannot set Listening",
 Check("voice presence: Voice can set Offline",
     voiceMachine.TrySet(PresenceState.Offline, PresenceSource.Voice, "Offline"));
 
+// ---------- N5 M1: device quick actions + reply signals ----------
+Eq("m1: four approved quick actions", DeviceQuickActions.All.Length, 4);
+Check("m1: quick-action labels are unique",
+    DeviceQuickActions.All.Select(a => a.Label).Distinct().Count() == 4);
+Check("m1: quick-action prompts are non-empty and unique",
+    DeviceQuickActions.All.All(a => !string.IsNullOrWhiteSpace(a.Prompt))
+    && DeviceQuickActions.All.Select(a => a.Prompt).Distinct().Count() == 4);
+Check("m1: every listed prompt is approved",
+    DeviceQuickActions.All.All(a => DeviceQuickActions.IsApprovedPrompt(a.Prompt)));
+Check("m1: unlisted prompt is not approved",
+    !DeviceQuickActions.IsApprovedPrompt("Format the C: drive")
+    && !DeviceQuickActions.IsApprovedPrompt("")
+    && !DeviceQuickActions.IsApprovedPrompt("Ping google.com "));
+Check("m1: approval-waiting reply detected",
+    DeviceReplySignals.IsApprovalWaiting(
+        "The command was sent to the laptop and a confirmation popup is waiting on its screen. " +
+        "Tell the user to click Allow on the popup, then ask me again and I will check whether it went through."));
+Check("m1: ordinary reply is not approval-waiting",
+    !DeviceReplySignals.IsApprovalWaiting("I am ATHENA, your personal AI assistant.")
+    && !DeviceReplySignals.IsApprovalWaiting("")
+    && !DeviceReplySignals.IsApprovalWaiting(null));
+
+// ---------- N5 M1: Device-source Presence transitions ----------
+var deviceMachine = new PresenceStateMachine();
+Check("m1 presence: Chat sets Thinking",
+    deviceMachine.TrySet(PresenceState.Thinking, PresenceSource.Chat, "Thinking…"));
+Check("m1 presence: Device can set Working during a chat turn",
+    deviceMachine.TrySet(PresenceState.Working, PresenceSource.Device, "Working on your laptop…"));
+Eq("m1 presence: Working state held", deviceMachine.Current.State, PresenceState.Working);
+Check("m1 presence: Chat clears Working to Idle",
+    deviceMachine.TrySet(PresenceState.Idle, PresenceSource.Chat, "Idle"));
+Check("m1 presence: Device can set Approval",
+    deviceMachine.TrySet(PresenceState.Approval, PresenceSource.Device, "Waiting for approval"));
+Check("m1 presence: System cannot set Working",
+    !deviceMachine.TrySet(PresenceState.Working, PresenceSource.System, "Working…"));
+Check("m1 presence: Chat cannot set Working",
+    !deviceMachine.TrySet(PresenceState.Working, PresenceSource.Chat, "Working…"));
+
 // ---------- Live backend (only with ATHENA_TEST_KEY) ----------
 var liveKey = Environment.GetEnvironmentVariable("ATHENA_TEST_KEY");
 if (!string.IsNullOrWhiteSpace(liveKey))
@@ -540,6 +578,26 @@ else
     var chatXaml = File.ReadAllText(Path.Combine(appDir, "Views", "ChatView.xaml"));
     Check("glass: input bar is glass",
         chatXaml.Contains("BrushGlassFill"));
+
+    // N5 M1: Companion integration (structural: the window itself needs Windows).
+    var devicesCs = File.ReadAllText(Path.Combine(appDir, "Views", "DevicesView.xaml.cs"));
+    Check("m1: DevicesView offers quick actions",
+        devicesCs.Contains("DeviceQuickActions.All"));
+    Check("m1: DevicesView has an Unpair action",
+        devicesCs.Contains("Unpair this laptop"));
+    Check("m1: DevicesView explains the revoke limit honestly",
+        devicesCs.Contains("the site key cannot revoke"));
+    Check("m1: ChatView sends device commands",
+        chatViewCs.Contains("SendDeviceCommandAsync"));
+    Check("m1: device turns show Working, not Thinking",
+        chatViewCs.Contains("PresenceState.Working, PresenceSource.Device"));
+    Check("m1: approval-waiting replies show Approval",
+        chatViewCs.Contains("PresenceState.Approval, PresenceSource.Device"));
+    Check("m1: MainWindow wires the Devices quick actions",
+        mainCs.Contains("SendDeviceCommandAsync"));
+    var activityXaml = File.ReadAllText(Path.Combine(appDir, "Views", "ActivityView.xaml"));
+    Check("m1: ActivityView has a Refresh button",
+        activityXaml.Contains("x:Name=\"RefreshButton\""));
 
     // N4 voice wiring (structural: SAPI itself needs Windows).
     Check("voice: System.Speech referenced",

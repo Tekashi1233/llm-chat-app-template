@@ -22,11 +22,13 @@ public sealed class AppState
     // One state machine for the whole app: ChatView reports
     // Thinking/Idle/Error/Offline from real chat events,
     // MainWindow reports connection changes, and the voice service
-    // reports Listening/Speaking from real voice events. The
-    // MainWindow's wordmark lighting follows whatever the machine
-    // holds. Nothing else may set a state — the machine rejects
-    // producers it does not recognise (Working/Approval need
-    // device activity in N5).
+    // reports Listening/Speaking from real voice events. M1 drives
+    // Working/Approval from real device activity: a device-command
+    // turn (Devices quick action) shows Working, and a reply saying
+    // a confirmation popup is waiting on the laptop shows Approval.
+    // The MainWindow's reactor lighting follows whatever the
+    // machine holds. Nothing else may set a state — the machine
+    // rejects producers it does not recognise.
     private readonly PresenceStateMachine _presence = new();
 
     public PresenceStatus PresenceStatus => _presence.Current;

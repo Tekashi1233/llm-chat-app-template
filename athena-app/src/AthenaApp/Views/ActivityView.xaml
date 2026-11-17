@@ -11,10 +11,15 @@
     <Border Grid.Row="0" Background="{StaticResource BrushPanel}"
             BorderBrush="{StaticResource BrushGold}" BorderThickness="0,0,0,1"
             Padding="16,10">
-      <TextBlock Text="Activity" FontFamily="Georgia"
-                 FontSize="18" FontWeight="Bold"
-                 Foreground="{StaticResource BrushGold}"
-                 VerticalAlignment="Center"/>
+      <DockPanel>
+        <TextBlock Text="Activity" FontFamily="Georgia"
+                   FontSize="18" FontWeight="Bold"
+                   Foreground="{StaticResource BrushGold}"
+                   VerticalAlignment="Center"/>
+        <Button x:Name="RefreshButton" Content="Refresh"
+                HorizontalAlignment="Right" Padding="10,4"
+                Click="RefreshButton_Click"/>
+      </DockPanel>
     </Border>
     <TextBlock Grid.Row="1" Margin="16,12,16,4" FontSize="13"
                FontStyle="Italic"
