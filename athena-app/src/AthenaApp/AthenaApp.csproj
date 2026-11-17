@@ -18,7 +18,12 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <!-- Compress the bundled runtime: roughly halves the .exe size. -->
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- NEVER set InvariantGlobalization here: WPF needs real
+         globalization data at window load (it resolves the system UI
+         culture, e.g. 1033 en-US). With invariant mode on, the app
+         crashes on launch with "Only the invariant culture is
+         supported in globalization-invariant mode". The price of
+         leaving it off is a bigger .exe (ICU data is bundled). -->
   </PropertyGroup>
 
   <ItemGroup>

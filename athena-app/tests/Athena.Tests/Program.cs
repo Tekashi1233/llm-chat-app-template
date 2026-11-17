@@ -199,6 +199,16 @@ else
         Check($"icon: referenced file is a WPF Resource ({iconFile})",
             csproj.Contains($"<Resource Include=\"{iconFile}\""));
     }
+
+    // WPF needs real globalization data at window load (it resolves the
+    // system UI culture, e.g. 1033 en-US). Invariant mode crashes the
+    // app on launch with "Only the invariant culture is supported in
+    // globalization-invariant mode" — the third N1 launch failure.
+    var csprojText = File.ReadAllText(Path.Combine(appDir, "AthenaApp.csproj"));
+    Check("wpf: InvariantGlobalization is NOT enabled",
+        !csprojText.Contains("<InvariantGlobalization>true</InvariantGlobalization>"));
+    Check("wpf: UseWPF is enabled",
+        csprojText.Contains("<UseWPF>true</UseWPF>"));
 }
 
 Console.WriteLine($"\n{passes} passed, {failures.Count} failed");
