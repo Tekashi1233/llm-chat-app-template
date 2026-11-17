@@ -671,11 +671,19 @@ export async function saveConversation(
 	const reply = await readStreamedReply(stream);
 	const now = Date.now();
 	for (const msg of newMessages) {
+		// Explicit defensive check, independent of the API-boundary
+		// validation: persist only non-empty string content with
+		// role exactly "user". A forged system, assistant or tool
+		// message must never reach the messages table, even if this
+		// function is ever called with an unvalidated array.
 		if (msg.role !== "user") continue;
+		if (typeof msg.content !== "string") continue;
+		const content = msg.content.trim();
+		if (!content) continue;
 		await env.DB.prepare(
 			"INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
 		)
-			.bind(conversationId, msg.role, redactCredentials(msg.content), now)
+			.bind(conversationId, msg.role, redactCredentials(content), now)
 			.run();
 	}
 	if (reply) {
