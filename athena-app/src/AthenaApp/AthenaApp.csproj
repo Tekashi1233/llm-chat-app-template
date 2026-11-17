@@ -23,10 +23,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Athena.Core\Athena.Core.csproj" />
-    <!-- The window Icon="icon.ico" in MainWindow.xaml resolves this as a
-         WPF resource at runtime. Without this line the file is only the
-         exe's native icon (ApplicationIcon) and the window fails to load. -->
-    <Resource Include="icon.ico" />
+    <!-- The window Icon="icon.png" in MainWindow.xaml resolves this as a
+         WPF resource at runtime. It must be a PNG: the ICO PIL wrote was
+         PNG-compressed throughout and WPF's decoder rejects it, which
+         crashed the app on launch (N1 fix 2). icon.ico stays as the exe's
+         native icon (ApplicationIcon) — it is now a classic BMP/DIB ICO,
+         which Explorer decodes fine. -->
+    <Resource Include="icon.png" />
   </ItemGroup>
 
 </Project>

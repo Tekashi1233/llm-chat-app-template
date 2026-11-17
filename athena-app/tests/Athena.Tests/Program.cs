@@ -134,6 +134,73 @@ else
     Console.WriteLine("SKIP live: set ATHENA_TEST_KEY to run backend tests.");
 }
 
+// ---------- Startup resources (regression: N1 icon crash) ----------
+// The first two builds crashed on launch: (1) icon.ico was not a WPF
+// resource at all, (2) the ICO PIL wrote was PNG-compressed throughout
+// and WPF's decoder rejects it ("The image decoder cannot decode the
+// image"). These byte-level checks run anywhere (no WPF runtime needed)
+// and fail on either broken form.
+string? appDir = new[]
+{
+    Environment.GetEnvironmentVariable("ATHENA_APP_DIR"),
+    "athena-app/src/AthenaApp",
+    "src/AthenaApp",
+    "../src/AthenaApp",
+    "../../src/AthenaApp",
+}.FirstOrDefault(d => d is not null && Directory.Exists(d));
+if (appDir is null)
+{
+    failures.Add("icon-resources: AthenaApp dir not found");
+    Console.WriteLine("FAIL icon-resources: AthenaApp dir not found (searched ATHENA_APP_DIR, athena-app/src/AthenaApp, src/AthenaApp, ../src/AthenaApp, ../../src/AthenaApp)");
+}
+else
+{
+    // ICO: valid ICONDIR, every entry BMP/DIB (BITMAPINFOHEADER = 40),
+    // never PNG — WPF's decoder cannot decode PNG-compressed ICOs.
+    var ico = File.ReadAllBytes(Path.Combine(appDir, "icon.ico"));
+    var icoOk = ico.Length >= 6
+        && BitConverter.ToUInt16(ico, 0) == 0
+        && BitConverter.ToUInt16(ico, 2) == 1
+        && BitConverter.ToUInt16(ico, 4) >= 1;
+    var count = icoOk ? BitConverter.ToUInt16(ico, 4) : 0;
+    var allBmp = icoOk;
+    for (var i = 0; i < count && allBmp; i++)
+    {
+        var off = 6 + i * 16;
+        if (off + 16 > ico.Length) { allBmp = false; break; }
+        var imgOff = BitConverter.ToInt32(ico, off + 12);
+        if (imgOff + 4 > ico.Length) { allBmp = false; break; }
+        // PNG magic, or a header size other than 40, is not classic BMP.
+        if (ico[imgOff] == 0x89 || BitConverter.ToInt32(ico, imgOff) != 40)
+            allBmp = false;
+    }
+    Check("icon: ICO is classic BMP/DIB (no PNG entries)", allBmp);
+
+    // PNG: valid signature + 256x256 IHDR (width is big-endian).
+    var png = File.ReadAllBytes(Path.Combine(appDir, "icon.png"));
+    var pngOk = png.Length > 24
+        && png[0] == 0x89 && png[1] == (byte)'P' && png[2] == (byte)'N'
+        && png[3] == (byte)'G'
+        && (png[16] << 24 | png[17] << 16 | png[18] << 8 | png[19]) == 256
+        && (png[20] << 24 | png[21] << 16 | png[22] << 8 | png[23]) == 256;
+    Check("icon: PNG is valid 256x256", pngOk);
+
+    // The window's Icon attribute must name a file that exists and is
+    // listed as a WPF Resource — otherwise the window fails to load.
+    var xaml = File.ReadAllText(Path.Combine(appDir, "MainWindow.xaml"));
+    var m = System.Text.RegularExpressions.Regex.Match(xaml, "Icon=\"([^\"]+)\"");
+    Check("icon: MainWindow has an Icon", m.Success);
+    if (m.Success)
+    {
+        var iconFile = m.Groups[1].Value;
+        Check($"icon: referenced file exists ({iconFile})",
+            File.Exists(Path.Combine(appDir, iconFile)));
+        var csproj = File.ReadAllText(Path.Combine(appDir, "AthenaApp.csproj"));
+        Check($"icon: referenced file is a WPF Resource ({iconFile})",
+            csproj.Contains($"<Resource Include=\"{iconFile}\""));
+    }
+}
+
 Console.WriteLine($"\n{passes} passed, {failures.Count} failed");
 return failures.Count == 0 ? 0 : 1;
 

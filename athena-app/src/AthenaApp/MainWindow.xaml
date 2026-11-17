@@ -4,7 +4,7 @@
         Title="ATHENA" Height="640" Width="860"
         MinHeight="480" MinWidth="640"
         Background="{StaticResource BrushBackground}"
-        Icon="icon.ico">
+        Icon="icon.png">
   <Grid>
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
