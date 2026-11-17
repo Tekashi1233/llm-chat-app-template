@@ -26,6 +26,10 @@ public partial class MemoryVaultView : UserControl, IRefreshable
         _loaded = false;
         ListPanel.Children.Clear();
         ListPanel.Children.Add(ViewHelpers.MutedText("Loading…"));
+        // N5 M3: the detail pane belongs to the previous load — a
+        // new load starts with it cleared, so a stale memory is
+        // never shown as current while the list reloads.
+        ShowNoMemorySelected();
         try
         {
             if (!state.HasAuth)
@@ -56,9 +60,24 @@ public partial class MemoryVaultView : UserControl, IRefreshable
         }
         catch (Exception ex)
         {
+            // N5 M3: a failed refresh never leaves a blank panel
+            // and never keeps stale data on screen — the list and
+            // the cached rows are cleared, the detail pane goes
+            // back to its placeholder, and the panel shows what
+            // happened plus what to do next.
+            _all = new();
+            _loaded = false;
             ListPanel.Children.Clear();
             ListPanel.Children.Add(ViewHelpers.BodyText(ViewHelpers.FriendlyError(ex)));
+            ListPanel.Children.Add(ViewHelpers.MutedText(ViewHelpers.RetryHintReopen));
+            ShowNoMemorySelected();
         }
+    }
+
+    private void ShowNoMemorySelected()
+    {
+        DetailPanel.Children.Clear();
+        DetailPanel.Children.Add(ViewHelpers.MutedText(ViewHelpers.NoMemorySelected));
     }
 
     private void Filter_Changed(object sender, RoutedEventArgs e)

@@ -17,6 +17,20 @@ internal static class ViewHelpers
         "Activity isn't enabled yet — it needs the N2 read endpoints, waiting for approval.";
     public const string OfflineMessage =
         "Couldn't reach ATHENA — check your connection and try again.";
+    /// <summary>
+    /// What to do after a failed refresh, for views with a Refresh
+    /// button (Devices, Activity). Shown under the error itself so
+    /// a failure always says what happened AND what to do next.
+    /// </summary>
+    public const string RetryHintRefresh = "Press Refresh to try again.";
+    /// <summary>
+    /// What to do after a failed refresh, for views with no Refresh
+    /// button (Memory Vault refreshes when the section is opened).
+    /// </summary>
+    public const string RetryHintReopen =
+        "Open this section again from the menu (···) to retry.";
+    /// <summary>The placeholder shown in the Memory Vault detail pane when nothing is selected.</summary>
+    public const string NoMemorySelected = "Select a memory to see the details.";
 
     public static Brush Gold => (Brush)Application.Current.FindResource("BrushGold");
     public static Brush Panel => (Brush)Application.Current.FindResource("BrushPanel");

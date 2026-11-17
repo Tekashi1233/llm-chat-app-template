@@ -176,6 +176,7 @@ public sealed class AuthClient : IDisposable
             401 => "Not authorised — the password was wrong, or the session has expired. Sign in again.",
             409 => "A password is already set — sign in instead of setting up again.",
             429 => "Too many attempts — wait a minute and try again.",
+            500 => ErrorMessages.ServiceProblemRequest,
             _ => $"The service returned HTTP {status}.",
         });
 }
