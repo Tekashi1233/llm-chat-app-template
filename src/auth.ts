@@ -362,8 +362,15 @@ export async function handleAuthRequest(
 			const owner = await getOwner(env);
 			return json({ setup_required: owner === null });
 		}
+		// POST /api/auth/setup is DISABLED (owner decision 2026-11-18:
+		// no password for ATHENA). It used to create owner-1 with only
+		// the site key, and the key is visible in the public page, so
+		// anyone could have claimed the owner account. The route now
+		// answers 404 like a route that never existed. handleSetup
+		// stays in code, dormant, so a future owner decision can
+		// re-enable it with a one-line change here.
 		if (path === "/api/auth/setup" && request.method === "POST") {
-			return handleSetup(request, env);
+			return json({ error: "Not found" }, 404);
 		}
 		if (path === "/api/auth/login" && request.method === "POST") {
 			return handleLogin(request, env);
@@ -388,10 +395,12 @@ export async function handleAuthRequest(
 }
 
 /**
- * POST /api/auth/setup — first-run only, site-key auth. The owner
- * sets the password once; a session token is returned so the
- * client is logged in immediately. 409 when an owner already
+ * POST /api/auth/setup — DORMANT (route disabled in handleAuthRequest,
+ * owner decision 2026-11-18: no password). First-run only, site-key
+ * auth. The owner sets the password once; a session token is returned
+ * so the client is logged in immediately. 409 when an owner already
  * exists; 400 when the password is shorter than 8 characters.
+ * Kept in code so a future owner decision can re-enable it.
  */
 async function handleSetup(request: Request, env: Env): Promise<Response> {
 	const site = await checkAuth(request, env);
