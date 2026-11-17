@@ -331,8 +331,11 @@ function parseTextToolCall(
  *    then stream the final answer with the results included.
  * When no tool is needed, the first call's own text is streamed back
  * as SSE, so the frontend contract never changes.
+ *
+ * Exported for testing (the 400-on-empty-request regression tests
+ * call it directly with a fake env).
  */
-async function handleChatRequest(
+export async function handleChatRequest(
 	request: Request,
 	env: Env,
 	ctx: ExecutionContext,
@@ -379,6 +382,25 @@ async function handleChatRequest(
 			conversation_id?: string;
 		};
 		const userMessages = validateIncomingMessages(messages);
+
+		// Empty or invalid request: nothing usable to answer. Reject
+		// here, before any history is loaded, before the model is
+		// called, before any tool runs, and before anything is
+		// saved — an empty request must cost no model call and leave
+		// no rows behind. (The live frontend always sends one user
+		// message; only a direct API caller can send none.)
+		if (userMessages.length === 0) {
+			return new Response(
+				JSON.stringify({ error: "No valid user message was provided." }),
+				{
+					status: 400,
+					headers: {
+						"content-type": "application/json",
+						"Access-Control-Allow-Origin": "*",
+					},
+				},
+			);
+		}
 
 		// Load recent conversation history from D1 memory
 		const history = await loadHistory(env, conversation_id);
