@@ -88,28 +88,34 @@ public partial class ChatView : UserControl, IRefreshable
         InputBox.Text = "";
         AddMessage("You", text.Trim(), isUser: true);
         ThinkingText.Visibility = Visibility.Visible;
+        _state.SetIslandState(IslandState.Thinking, IslandTriggerSource.Chat, "Thinking…");
 
         try
         {
             var reply = await _state.Chat.SendMessageAsync(
                 text, _state.ApiKey, _state.ConversationId);
             AddMessage("ATHENA", reply, isUser: false);
+            _state.SetLastReply(reply);
+            _state.SetIslandState(IslandState.Idle, IslandTriggerSource.Chat, "Idle");
         }
         catch (AthenaApiException ex)
         {
             AddSystemMessage(ex.Message, isError: true);
+            _state.SetIslandState(IslandState.Error, IslandTriggerSource.Chat, ex.Message);
         }
         catch (HttpRequestException)
         {
             AddSystemMessage(
                 "Couldn't reach ATHENA — check your connection and try again.",
                 isError: true);
+            _state.SetIslandState(IslandState.Offline, IslandTriggerSource.Chat, "Offline");
         }
         catch (TaskCanceledException)
         {
             AddSystemMessage(
                 "The request timed out. Your message was not answered — try again.",
                 isError: true);
+            _state.SetIslandState(IslandState.Offline, IslandTriggerSource.Chat, "Offline — timed out");
         }
         finally
         {
@@ -117,6 +123,10 @@ public partial class ChatView : UserControl, IRefreshable
             SendButton.IsEnabled = true;
             _sending = false;
             InputBox.Focus();
+            // If an unexpected error escaped the catches above, never
+            // leave the Island stuck on Thinking.
+            if (_state.IslandStatus.State == IslandState.Thinking)
+                _state.SetIslandState(IslandState.Idle, IslandTriggerSource.Chat, "Idle");
         }
     }
 

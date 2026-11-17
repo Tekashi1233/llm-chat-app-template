@@ -1,11 +1,12 @@
-# ATHENA — Native Windows App (N1 shell + N2 Command Centre)
+# ATHENA — Native Windows App (N1 shell + N2 Command Centre + N3 Dynamic Island)
 
 A genuine, Chrome-free native Windows desktop app (C# + WPF, .NET 8)
 that chats with the existing ATHENA backend — the Cloudflare Worker
-that used to be VESPER. N1 built the minimal shell; **N2 expands it
-into the full Command Centre**: Dashboard, Chat, Conversations,
-Memory Vault, Tools, Devices, Activity and Settings, in one sidebar.
-The Dynamic Island (N3) and voice (N4) come later.
+that used to be VESPER. N1 built the minimal shell; N2 expanded it
+into the full Command Centre; **N3 adds the floating Dynamic
+Island**: a small pill that shows what ATHENA is doing (idle,
+thinking, offline, error), expands to the last reply, and opens
+the Centre. Voice (N4) comes later.
 
 ## What N1 is (and is not)
 
@@ -90,17 +91,18 @@ DPAPI round-trip tests run on Windows only and are skipped on Linux
 with a note. The WPF window itself can only be launched on Windows —
 the UI launch test belongs on the real laptop.
 
-## Known limitations (N2)
+## Known limitations (N3)
 
-- **Memory Vault, Devices and Activity need three new read-only
-  endpoints** (`GET /api/memories`, `GET /api/devices/status`,
-  `GET /api/devices/activity`). They are written and type-checked on
-  the `n2-read-endpoints` branch — see `N2-ENDPOINTS.md` — but NOT
-  deployed. Until the owner approves the merge, those three sections
-  show an honest "not enabled yet" note instead of data. Everything
-  else in N2 works on the existing API.
+- The Island shows only states real events produce: Idle,
+  Thinking (a chat request in flight), Offline (connection
+  failure), Error (a failed request). Listening/Speaking need
+  voice (N4); Working/Approval need Companion device activity
+  (N5) — the state machine exists and refuses anyone else
+  asking for those states.
+- The Island shares the Centre's AppState, so it shows the same
+  conversation and backend — no second client, no second memory.
 - No voice yet (N4). No tray icon, no startup-on-boot, no
-  notifications (N3/N6). No device commands from this app yet — the
+  notifications (N6). No device commands from this app yet — the
   Companion still owns those (N5).
 - The exe is unsigned (SmartScreen warning, see above).
 - Conversation history is server-side per conversation id; the app
@@ -108,9 +110,10 @@ the UI launch test belongs on the real laptop.
 - If the laptop is offline, the app shows Offline and sending fails
   with a plain error — it does not queue messages (N6).
 
-## What remains for N3
+## What remains for N4
 
-Floating Dynamic Island: compact pill, idle/listening/thinking/
-speaking/working/approval/offline/error states driven by real app
-events, draggable with remembered position, expand to the Command
-Centre, always-on-top control.
+Female British voice + native voice interaction: runtime voice
+detection (Hazel/Sonia), voice selection in Settings, speech
+input with a visible mic indicator, interruptible speech, and
+the Island's Listening/Speaking states wired to real voice
+events.

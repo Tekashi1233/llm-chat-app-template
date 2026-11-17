@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
@@ -20,6 +21,11 @@ public partial class MainWindow : Window
     private readonly AppState _state = new();
     private readonly ChatView _chatView;
     private readonly List<Button> _navButtons = new();
+    private IslandWindow? _island;
+
+    /// <summary>Same folder as the DPAPI config (%APPDATA%\Athena); the Island's position file lives here.</summary>
+    private static string IslandStoreDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Athena");
 
     public MainWindow()
     {
@@ -31,6 +37,8 @@ public partial class MainWindow : Window
                 _navButtons.Add(button);
         }
         Loaded += async (_, _) => await InitialiseAsync();
+        Closing += MainWindow_Closing;
+        _state.ShowIslandRequested += OnShowIslandRequested;
         NavigateTo("Chat");
     }
 
@@ -72,6 +80,45 @@ public partial class MainWindow : Window
         await LoadDataAsync();
         _chatView.RenderConversation();
         _chatView.FocusInput();
+        ShowIslandIfEnabled();
+    }
+
+    /// <summary>
+    /// N3: create the floating Island once, after the connection
+    /// state is known. It shares this window's AppState, so it
+    /// shows the same conversation and backend — no second client.
+    /// </summary>
+    private void ShowIslandIfEnabled()
+    {
+        _island ??= new IslandWindow(_state, IslandStoreDir);
+        _island.OpenCentreRequested -= OnIslandOpenCentre;
+        _island.OpenCentreRequested += OnIslandOpenCentre;
+        var saved = IslandPositionStore.Load(IslandStoreDir);
+        if (saved is null || saved.Visible)
+            _island.ShowIsland();
+    }
+
+    private void OnShowIslandRequested()
+    {
+        ShowIslandIfEnabled();
+        _island?.ShowIsland();
+    }
+
+    private void OnIslandOpenCentre()
+    {
+        NavigateTo("Chat");
+        Activate();
+        _chatView.FocusInput();
+    }
+
+    private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (_island is not null)
+        {
+            _island.SavePosition();
+            _island.AppExiting = true;
+            _island.Close();
+        }
     }
 
     /// <summary>Re-validates the key and reloads model info + backup (used after a key change).</summary>
@@ -121,28 +168,37 @@ public partial class MainWindow : Window
             {
                 case KeyValidationResult.Valid:
                     SetStatus("Connected", Colors.Green);
+                    // Only clear a bad state; the machine refuses a
+                    // System Idle while a chat is Thinking.
+                    if (_state.IslandStatus.State is IslandState.Offline or IslandState.Error)
+                        _state.SetIslandState(IslandState.Idle, IslandTriggerSource.System, "Ready");
                     break;
                 case KeyValidationResult.Invalid:
                     SetStatus("Key invalid — use “Set key”", Colors.Red);
                     _chatView.AddSystemMessage(
                         "The stored key was rejected. Please set the correct site key.",
                         isError: true);
+                    _state.SetIslandState(IslandState.Error, IslandTriggerSource.System, "Key invalid");
                     break;
                 case KeyValidationResult.RateLimited:
                     SetStatus("Rate limited — wait a minute", Colors.Orange);
+                    _state.SetIslandState(IslandState.Error, IslandTriggerSource.System, "Rate limited");
                     break;
                 default:
                     SetStatus("Could not reach ATHENA", Colors.Orange);
+                    _state.SetIslandState(IslandState.Offline, IslandTriggerSource.System, "Offline");
                     break;
             }
         }
         catch (HttpRequestException)
         {
             SetStatus("Offline — check your connection", Colors.Orange);
+            _state.SetIslandState(IslandState.Offline, IslandTriggerSource.System, "Offline");
         }
         catch (TaskCanceledException)
         {
             SetStatus("Offline — connection timed out", Colors.Orange);
+            _state.SetIslandState(IslandState.Offline, IslandTriggerSource.System, "Offline — timed out");
         }
     }
 

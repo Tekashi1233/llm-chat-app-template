@@ -219,6 +219,68 @@ var acts = await mockAct.GetDeviceActivityAsync("k");
 Check("data: activity parses", acts?.Actions.Length == 1);
 Check("data: activity approved", acts?.Actions[0].WasApproved == true);
 
+// ---------- N3: Island state machine ----------
+var machine = new IslandStateMachine();
+Eq("island: starts Idle", machine.Current.State, IslandState.Idle);
+Check("island: Chat can set Thinking",
+    machine.TrySet(IslandState.Thinking, IslandTriggerSource.Chat, "Thinking…"));
+Check("island: System cannot clear Thinking to Idle",
+    !machine.TrySet(IslandState.Idle, IslandTriggerSource.System, "Ready"));
+Check("island: Chat completes Thinking to Idle",
+    machine.TrySet(IslandState.Idle, IslandTriggerSource.Chat, "Idle"));
+Check("island: Chat cannot set Listening (needs voice, N4)",
+    !machine.TrySet(IslandState.Listening, IslandTriggerSource.Chat, "Listening"));
+Check("island: Voice can set Listening",
+    machine.TrySet(IslandState.Listening, IslandTriggerSource.Voice, "Listening"));
+Check("island: Chat cannot set Speaking",
+    !machine.TrySet(IslandState.Speaking, IslandTriggerSource.Chat, "Speaking"));
+Check("island: Chat cannot set Working (needs device, N5)",
+    !machine.TrySet(IslandState.Working, IslandTriggerSource.Chat, "Working"));
+Check("island: Device can set Working",
+    machine.TrySet(IslandState.Working, IslandTriggerSource.Device, "Working"));
+Check("island: Chat cannot set Approval",
+    !machine.TrySet(IslandState.Approval, IslandTriggerSource.Chat, "Approval"));
+Check("island: anyone can set Offline",
+    machine.TrySet(IslandState.Offline, IslandTriggerSource.System, "Offline"));
+Check("island: Offline clears to Idle",
+    machine.TrySet(IslandState.Idle, IslandTriggerSource.System, "Ready"));
+Check("island: same-state updates detail",
+    machine.TrySet(IslandState.Idle, IslandTriggerSource.System, "Ready again")
+    && machine.Current.Detail == "Ready again");
+Check("island: Error from Chat",
+    machine.TrySet(IslandState.Thinking, IslandTriggerSource.Chat, "Thinking…")
+    && machine.TrySet(IslandState.Error, IslandTriggerSource.Chat, "Failed"));
+Eq("island: Error state held", machine.Current.State, IslandState.Error);
+
+// ---------- N3: Island position maths ----------
+Eq("island pos: negative clamps to 0",
+    IslandPositionMath.Clamp(-50, -20, 240, 56, 1920, 1080), (0.0, 0.0));
+Eq("island pos: beyond right/bottom clamps inside",
+    IslandPositionMath.Clamp(1900, 1050, 240, 56, 1920, 1080), (1680.0, 1024.0));
+Eq("island pos: width overflow pins left to 0",
+    IslandPositionMath.Clamp(100, 100, 240, 56, 200, 100), (0.0, 44.0));
+Eq("island pos: tiny screen pins to 0,0",
+    IslandPositionMath.Clamp(100, 100, 240, 56, 200, 40), (0.0, 0.0));
+var defPos = IslandPositionMath.Default(1920, 1080, 240, 56);
+Eq("island pos: default bottom-right", (defPos.Left, defPos.Top), (1656.0, 1000.0));
+Check("island pos: default visible + on top", defPos.Visible && defPos.AlwaysOnTop);
+
+// ---------- N3: Island position store round-trip ----------
+var tmpIslandDir = Path.Combine(
+    Path.GetTempPath(), "athena-island-test-" + Guid.NewGuid().ToString("N"));
+Check("island store: missing file returns null",
+    IslandPositionStore.Load(tmpIslandDir) is null);
+IslandPositionStore.Save(tmpIslandDir,
+    new IslandPosition(123.5, 456.5, AlwaysOnTop: false, Visible: true));
+var loadedPos = IslandPositionStore.Load(tmpIslandDir);
+Check("island store: round-trip",
+    loadedPos is not null && loadedPos.Left == 123.5 && loadedPos.Top == 456.5
+    && !loadedPos.AlwaysOnTop && loadedPos.Visible);
+File.WriteAllText(Path.Combine(tmpIslandDir, "island.json"), "{ not json");
+Check("island store: corrupt file returns null",
+    IslandPositionStore.Load(tmpIslandDir) is null);
+Directory.Delete(tmpIslandDir, recursive: true);
+
 // ---------- Live backend (only with ATHENA_TEST_KEY) ----------
 var liveKey = Environment.GetEnvironmentVariable("ATHENA_TEST_KEY");
 if (!string.IsNullOrWhiteSpace(liveKey))
@@ -343,6 +405,27 @@ else
         Check($"shell: view exists ({view})",
             File.Exists(Path.Combine(appDir, "Views", view + ".xaml")) &&
             File.Exists(Path.Combine(appDir, "Views", view + ".xaml.cs")));
+
+    // N3 Island wiring (structural: the window itself needs Windows).
+    Check("island: IslandWindow.xaml exists",
+        File.Exists(Path.Combine(appDir, "IslandWindow.xaml")));
+    Check("island: IslandWindow.xaml.cs exists",
+        File.Exists(Path.Combine(appDir, "IslandWindow.xaml.cs")));
+    var chatViewCs = File.ReadAllText(Path.Combine(appDir, "Views", "ChatView.xaml.cs"));
+    Check("island: ChatView reports Thinking",
+        chatViewCs.Contains("SetIslandState(IslandState.Thinking"));
+    Check("island: ChatView reports Idle on reply",
+        chatViewCs.Contains("SetIslandState(IslandState.Idle"));
+    Check("island: ChatView reports Offline on failure",
+        chatViewCs.Contains("SetIslandState(IslandState.Offline"));
+    var mainCs = File.ReadAllText(Path.Combine(appDir, "MainWindow.xaml.cs"));
+    Check("island: MainWindow creates the Island",
+        mainCs.Contains("new IslandWindow("));
+    Check("island: MainWindow saves position on close",
+        mainCs.Contains("SavePosition()"));
+    var settingsCs = File.ReadAllText(Path.Combine(appDir, "Views", "SettingsView.xaml.cs"));
+    Check("island: Settings can show the Island",
+        settingsCs.Contains("RequestShowIsland()"));
 }
 
 Console.WriteLine($"\n{passes} passed, {failures.Count} failed");
