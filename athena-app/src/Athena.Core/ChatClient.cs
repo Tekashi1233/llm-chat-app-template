@@ -30,23 +30,36 @@ public sealed class ChatClient : IDisposable
     /// Sends one user message and returns the assistant's full reply.
     /// The server loads this conversation's history itself, so a
     /// follow-up question works the same as on the website.
+    /// Auth is a Bearer token when one is stored, else the site key
+    /// (grace period — the Worker accepts either). viaVoice must be
+    /// true ONLY when the text came from the microphone; it is the
+    /// tag the Worker enforces the voice-only revoke guard on.
     /// </summary>
+    public Task<string> SendMessageAsync(
+        string text,
+        string? apiKey,
+        string conversationId,
+        CancellationToken ct = default) =>
+        SendMessageAsync(text, apiKey, conversationId, null, viaVoice: false, ct);
+
     public async Task<string> SendMessageAsync(
         string text,
-        string apiKey,
+        string? apiKey,
         string conversationId,
+        string? authToken,
+        bool viaVoice,
         CancellationToken ct = default)
     {
         if (!MessageValidation.IsValidUserMessage(text))
             throw new ArgumentException("Message is empty.", nameof(text));
-        if (string.IsNullOrWhiteSpace(apiKey))
-            throw new ArgumentException("API key is missing.", nameof(apiKey));
+        if (string.IsNullOrWhiteSpace(authToken) && string.IsNullOrWhiteSpace(apiKey))
+            throw new ArgumentException("No token and no site key to authenticate with.", nameof(apiKey));
 
         using var req = new HttpRequestMessage(HttpMethod.Post, AthenaApi.ChatPath);
-        req.Headers.Add("X-Vesper-Key", apiKey);
+        AuthHeaders.Apply(req, authToken, apiKey);
         req.Content = JsonContent.Create(new
         {
-            messages = new[] { new { role = "user", content = text.Trim() } },
+            messages = new[] { ChatMessageBuilder.UserMessage(text, viaVoice) },
             conversation_id = conversationId,
         });
 
@@ -66,14 +79,24 @@ public sealed class ChatClient : IDisposable
     /// Validates a site key WITHOUT a model call and WITHOUT creating
     /// any rows: the server authenticates first, then rejects the
     /// empty request with HTTP 400 (P2-M1 rev7). 400 therefore means
-    /// the key is good; 401 means it is wrong.
+    /// the key is good; 401 means it is wrong. Kept for the legacy
+    /// key-paste fallback; new code should use ValidateAuthAsync,
+    /// which prefers a stored token.
     /// </summary>
-    public async Task<KeyValidationResult> ValidateKeyAsync(
+    public Task<KeyValidationResult> ValidateKeyAsync(
         string apiKey,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        ValidateAuthAsync(null, apiKey, ct);
+
+    /// <summary>
+    /// Validates the current auth (token first, site key fallback)
+    /// without a model call. See AuthClient.ValidateAuthAsync.
+    /// </summary>
+    public async Task<KeyValidationResult> ValidateAuthAsync(
+        string? token, string? apiKey, CancellationToken ct = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, AthenaApi.ChatPath);
-        req.Headers.Add("X-Vesper-Key", apiKey);
+        AuthHeaders.Apply(req, token, apiKey);
         req.Content = JsonContent.Create(new
         {
             messages = Array.Empty<object>(),
@@ -93,7 +116,7 @@ public sealed class ChatClient : IDisposable
     private static AthenaApiException MapError(int status) => new(status,
         status switch
         {
-            401 => "Not authorised — the site key is missing or wrong.",
+            401 => "Not authorised — sign in again, or the site key is missing or wrong.",
             429 => "Too many requests — wait a minute and try again.",
             _ => $"The service returned HTTP {status}.",
         });

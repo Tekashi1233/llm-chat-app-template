@@ -1,23 +1,30 @@
 <Window x:Class="Athena.SetupWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Set up ATHENA" Height="300" Width="520"
+        Title="Sign in to ATHENA" Height="380" Width="520"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="{StaticResource BrushBackground}">
   <StackPanel Margin="20">
-    <TextBlock Text="Your site key" FontSize="16" FontWeight="SemiBold"
+    <TextBlock x:Name="HeadingText" Text="Sign in" FontSize="16" FontWeight="SemiBold"
                Foreground="{StaticResource BrushGold}" Margin="0,0,0,8"/>
-    <TextBlock TextWrapping="Wrap" FontSize="13"
+    <TextBlock x:Name="IntroText" TextWrapping="Wrap" FontSize="13"
                Foreground="{StaticResource BrushMuted}" Margin="0,0,0,12">
-      Paste the site key from your ATHENA website file (the VESPER_KEY value
-      in vesper-cloud.html). It is checked once, then stored encrypted with
-      Windows DPAPI on this computer only. It never leaves this computer
-      except in the request header to your own backend, exactly as the
-      website sends it.
+      Sign in with your ATHENA password. Your session is stored
+      encrypted with Windows DPAPI on this computer only.
     </TextBlock>
-    <PasswordBox x:Name="KeyBox" Margin="0,0,0,12"/>
+    <TextBlock Text="Password" FontSize="13"
+               Foreground="{StaticResource BrushMuted}" Margin="0,0,0,4"/>
+    <PasswordBox x:Name="PasswordBox" Margin="0,0,0,12"/>
+    <TextBlock x:Name="ConfirmLabel" Text="Confirm password" FontSize="13"
+               Foreground="{StaticResource BrushMuted}" Margin="0,0,0,4"
+               Visibility="Collapsed"/>
+    <PasswordBox x:Name="ConfirmBox" Margin="0,0,0,12" Visibility="Collapsed"/>
+    <TextBlock x:Name="KeyLabel" Text="Site key (one-time, for first setup only — never stored)" FontSize="13"
+               Foreground="{StaticResource BrushMuted}" Margin="0,0,0,4"
+               Visibility="Collapsed"/>
+    <PasswordBox x:Name="KeyBox" Margin="0,0,0,12" Visibility="Collapsed"/>
     <StackPanel Orientation="Horizontal">
-      <Button x:Name="SaveButton" Content="Validate &amp; save"
+      <Button x:Name="SaveButton" Content="Sign in"
               Click="SaveButton_Click"/>
       <Button Content="Cancel" Margin="12,0,0,0" Background="#2A2D33"
               Foreground="#F3F1EC" Click="CancelButton_Click"/>

@@ -28,15 +28,15 @@ public partial class ActivityView : UserControl, IRefreshable
         ContentPanel.Children.Add(ViewHelpers.MutedText("Loading…"));
         try
         {
-            if (string.IsNullOrWhiteSpace(state.ApiKey))
+            if (!state.HasAuth)
             {
                 ContentPanel.Children.Clear();
                 ContentPanel.Children.Add(ViewHelpers.MutedText(
-                    "Set your site key first to see activity."));
+                    "Sign in first to see activity."));
                 return;
             }
 
-            var list = await state.Data.GetDeviceActivityAsync(state.ApiKey, limit: 50);
+            var list = await state.Data.GetDeviceActivityAsync(state.ApiKey, limit: 50, authToken: state.AuthToken);
             ContentPanel.Children.Clear();
             if (list is null)
             {

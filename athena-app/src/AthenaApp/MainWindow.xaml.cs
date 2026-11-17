@@ -83,25 +83,52 @@ public partial class MainWindow : Window
             _state.ConversationId = Guid.NewGuid().ToString();
         }
 
+        _state.AuthToken = SecureStore.TryLoadToken();
         _state.ApiKey = SecureStore.TryLoadKey();
-        if (string.IsNullOrWhiteSpace(_state.ApiKey))
+
+        // N5 M2 migration for existing installs: a stored site key is
+        // exchanged once for a session token, then deleted from the
+        // config. If the exchange fails (auth endpoints not deployed
+        // yet, or the key is bad) the key stays and the app keeps
+        // working on it through the grace period.
+        if (AuthValidation.ShouldMigrate(
+                !string.IsNullOrWhiteSpace(_state.AuthToken),
+                !string.IsNullOrWhiteSpace(_state.ApiKey)))
         {
-            SetStatus("No key yet", Colors.Gray);
-            _chatView.AddSystemMessage(
-                "Welcome to ATHENA. To start chatting, set your site key " +
-                "(the same key the website uses). It is stored encrypted " +
-                "on this computer only — never in the app itself. " +
-                "Open the menu (···) at the top right, then Settings.",
-                isError: false);
-            var setup = new SetupWindow(_state.Chat);
-            if (setup.ShowDialog() == true)
-                _state.ApiKey = SecureStore.TryLoadKey();
+            try
+            {
+                var exchanged = await _state.Auth.ExchangeAsync(_state.ApiKey!);
+                SecureStore.SaveToken(exchanged.Token);
+                SecureStore.DeleteKey();
+                _state.AuthToken = exchanged.Token;
+                _state.ApiKey = null;
+            }
+            catch (Exception)
+            {
+                // Grace period: keep the key, try again next launch.
+            }
         }
 
-        if (!string.IsNullOrWhiteSpace(_state.ApiKey))
+        if (!_state.HasAuth)
+        {
+            SetStatus("Not signed in", Colors.Gray);
+            _chatView.AddSystemMessage(
+                "Welcome to ATHENA. To start chatting, sign in with your " +
+                "password (menu (···) at the top right, then Settings). " +
+                "Your session is stored encrypted on this computer only.",
+                isError: false);
+            var setup = new SetupWindow(_state.Chat, _state.Auth);
+            if (setup.ShowDialog() == true)
+            {
+                _state.AuthToken = SecureStore.TryLoadToken();
+                _state.ApiKey = SecureStore.TryLoadKey();
+            }
+        }
+
+        if (_state.HasAuth)
             await CheckConnectionAsync();
         else
-            SetStatus("No key — menu (···) → Settings to set it", Colors.Gray);
+            SetStatus("Not signed in — menu (···) → Settings to sign in", Colors.Gray);
 
         await LoadDataAsync();
         _chatView.RenderConversation();
@@ -156,10 +183,12 @@ public partial class MainWindow : Window
         StopGlowTimer();
     }
 
-    /// <summary>Re-validates the key and reloads model info + backup (used after a key change).</summary>
+    /// <summary>Re-validates the auth and reloads model info + backup (used after a sign-in change).</summary>
     public async Task ReconnectAsync()
     {
-        if (!string.IsNullOrWhiteSpace(_state.ApiKey))
+        _state.AuthToken = SecureStore.TryLoadToken();
+        _state.ApiKey = SecureStore.TryLoadKey();
+        if (_state.HasAuth)
         {
             await CheckConnectionAsync();
             await LoadDataAsync();
@@ -167,13 +196,13 @@ public partial class MainWindow : Window
         }
         else
         {
-            SetStatus("No key — menu (···) → Settings to set it", Colors.Gray);
+            SetStatus("Not signed in — menu (···) → Settings to sign in", Colors.Gray);
         }
     }
 
     private async Task LoadDataAsync()
     {
-        if (string.IsNullOrWhiteSpace(_state.ApiKey)) return;
+        if (!_state.HasAuth) return;
         // Best effort: views surface their own errors if these fail.
         try
         {
@@ -185,7 +214,8 @@ public partial class MainWindow : Window
         }
         try
         {
-            _state.Backup = await _state.Data.GetBackupAsync(_state.ApiKey);
+            _state.Backup = await _state.Data.GetBackupAsync(
+                _state.ApiKey, authToken: _state.AuthToken);
         }
         catch (Exception)
         {
@@ -198,7 +228,8 @@ public partial class MainWindow : Window
         SetStatus("Checking connection…", Colors.Gray);
         try
         {
-            var result = await _state.Chat.ValidateKeyAsync(_state.ApiKey!);
+            var result = await _state.Chat.ValidateAuthAsync(
+                _state.AuthToken, _state.ApiKey);
             switch (result)
             {
                 case KeyValidationResult.Valid:
@@ -209,11 +240,11 @@ public partial class MainWindow : Window
                         _state.SetPresenceState(PresenceState.Idle, PresenceSource.System, "Ready");
                     break;
                 case KeyValidationResult.Invalid:
-                    SetStatus("Key invalid — menu (···) → Settings to fix it", Colors.Red);
+                    SetStatus("Sign-in expired — menu (···) → Settings to sign in again", Colors.Red);
                     _chatView.AddSystemMessage(
-                        "The stored key was rejected. Please set the correct site key.",
+                        "Your session was rejected. Please sign in again.",
                         isError: true);
-                    _state.SetPresenceState(PresenceState.Error, PresenceSource.System, "Key invalid");
+                    _state.SetPresenceState(PresenceState.Error, PresenceSource.System, "Not signed in");
                     break;
                 case KeyValidationResult.RateLimited:
                     SetStatus("Rate limited — wait a minute", Colors.Orange);

@@ -388,6 +388,181 @@ Check("m1 presence: System cannot set Working",
 Check("m1 presence: Chat cannot set Working",
     !deviceMachine.TrySet(PresenceState.Working, PresenceSource.Chat, "Working…"));
 
+// ---------- N5 M2: owner auth (password + session tokens) ----------
+// Header selection: token always wins; key is the grace fallback.
+Eq("m2: token preferred over key",
+    AuthHeaders.Select("tok-1", "key-1").Name, "Authorization");
+Eq("m2: token header value is Bearer",
+    AuthHeaders.Select("tok-1", "key-1").Value, "Bearer tok-1");
+Eq("m2: key used when no token",
+    AuthHeaders.Select(null, "key-1").Name, "X-Vesper-Key");
+Eq("m2: key header value is the key",
+    AuthHeaders.Select(null, "key-1").Value, "key-1");
+Check("m2: PrefersToken true only with a token",
+    AuthHeaders.PrefersToken("tok") && !AuthHeaders.PrefersToken(null)
+    && !AuthHeaders.PrefersToken("   "));
+var noAuthThrew = false;
+try { AuthHeaders.Select(null, null); } catch (ArgumentException) { noAuthThrew = true; }
+Check("m2: no token and no key throws", noAuthThrew);
+
+// Password rules: minimum 8, confirm must match exactly.
+Check("m2: password of 8 is valid",
+    AuthValidation.IsValidPassword("12345678"));
+Check("m2: password of 7 is invalid",
+    !AuthValidation.IsValidPassword("1234567"));
+Check("m2: empty/null password invalid",
+    !AuthValidation.IsValidPassword("") && !AuthValidation.IsValidPassword(null));
+Check("m2: matching passwords match",
+    AuthValidation.PasswordsMatch("secret-1", "secret-1"));
+Check("m2: different passwords do not match",
+    !AuthValidation.PasswordsMatch("secret-1", "secret-2"));
+
+// Migration: exchange only when a key is stored and no token yet.
+Check("m2: migrate when key stored, no token",
+    AuthValidation.ShouldMigrate(hasToken: false, hasKey: true));
+Check("m2: no migrate when token already stored",
+    !AuthValidation.ShouldMigrate(hasToken: true, hasKey: true));
+Check("m2: no migrate when nothing stored",
+    !AuthValidation.ShouldMigrate(hasToken: false, hasKey: false));
+
+// via_voice tagging: present only for mic messages, never for typed.
+var micMsg = ChatMessageBuilder.UserMessage("wolf", viaVoice: true);
+Check("m2: mic message carries via_voice",
+    micMsg.TryGetValue("via_voice", out var vv) && vv is true);
+var typedMsg = ChatMessageBuilder.UserMessage("wolf", viaVoice: false);
+Check("m2: typed message has NO via_voice key",
+    !typedMsg.ContainsKey("via_voice"));
+Eq("m2: message content trimmed",
+    ChatMessageBuilder.UserMessage("  hello  ", viaVoice: false)["content"], "hello");
+
+// AuthClient with mocked HTTP.
+var mockStatus = new AuthClient(MockClient(HttpStatusCode.OK, "{\"setup_required\":true}"));
+Eq("m2: status setup_required parses",
+    (await mockStatus.GetStatusAsync())?.SetupRequired, true);
+var mockStatus404 = new AuthClient(MockClient(HttpStatusCode.NotFound));
+Check("m2: status 404 (endpoints not deployed) returns null",
+    await mockStatus404.GetStatusAsync() is null);
+var mockLogin = new AuthClient(MockClient(HttpStatusCode.OK,
+    "{\"token\":\"tok-abc\",\"expires_at\":\"2026-12-17T00:00:00.000Z\"}"));
+var loginResp = await mockLogin.LoginAsync("correct-password");
+Eq("m2: login returns the token", loginResp.Token, "tok-abc");
+Eq("m2: login returns expiry", loginResp.ExpiresAt, "2026-12-17T00:00:00.000Z");
+var mockLogin401 = new AuthClient(MockClient(HttpStatusCode.Unauthorized));
+var login401 = false;
+try { await mockLogin401.LoginAsync("wrong-password"); }
+catch (AthenaApiException ex) { login401 = ex.StatusCode == 401; }
+Check("m2: wrong password answers 401", login401);
+var mockSetup409 = new AuthClient(MockClient(HttpStatusCode.Conflict));
+var setup409 = false;
+try { await mockSetup409.SetupAsync("new-password-1", "site-key"); }
+catch (AthenaApiException ex) { setup409 = ex.StatusCode == 409; }
+Check("m2: setup when owner exists answers 409", setup409);
+var mockSetupShort = new AuthClient(MockClient(HttpStatusCode.OK, "{}"));
+var setupShort = false;
+try { await mockSetupShort.SetupAsync("short", "site-key"); }
+catch (ArgumentException) { setupShort = true; }
+Check("m2: setup rejects a short password client-side, no HTTP call", setupShort);
+var mockExchange = new AuthClient(MockClient(HttpStatusCode.OK,
+    "{\"token\":\"tok-ex\",\"expires_at\":\"2026-12-17T00:00:00.000Z\"}"));
+Eq("m2: exchange swaps a key for a token",
+    (await mockExchange.ExchangeAsync("site-key")).Token, "tok-ex");
+var mockAuthValid = new AuthClient(MockClient(HttpStatusCode.BadRequest));
+Eq("m2: token probe 400 means valid",
+    await mockAuthValid.ValidateAuthAsync("tok-1", null), KeyValidationResult.Valid);
+
+// ChatClient: Bearer header + via_voice body, captured from the wire.
+var capToken = new CaptureHandler(HttpStatusCode.OK,
+    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n" +
+    "data: [DONE]\n");
+var capTokenClient = new ChatClient(new HttpClient(capToken)
+{
+    BaseAddress = new Uri(AthenaApi.WorkerBase),
+});
+await capTokenClient.SendMessageAsync("hello", null, "c1", "tok-1", viaVoice: false);
+Check("m2: chat with token sends Authorization Bearer",
+    capToken.LastRequest?.Headers.TryGetValues("Authorization", out var bearer) == true
+    && bearer.First() == "Bearer tok-1");
+Check("m2: chat with token sends NO site-key header",
+    capToken.LastRequest?.Headers.Contains("X-Vesper-Key") == false);
+Check("m2: typed chat body has no via_voice",
+    !capToken.LastBody.Contains("via_voice"));
+
+var capVoice = new CaptureHandler(HttpStatusCode.OK,
+    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n" +
+    "data: [DONE]\n");
+var capVoiceClient = new ChatClient(new HttpClient(capVoice)
+{
+    BaseAddress = new Uri(AthenaApi.WorkerBase),
+});
+await capVoiceClient.SendMessageAsync("wolf", "k", "c1", "tok-1", viaVoice: true);
+Check("m2: mic chat body carries via_voice:true",
+    capVoice.LastBody.Contains("\"via_voice\":true"));
+Check("m2: mic chat still sends Bearer",
+    capVoice.LastRequest?.Headers.TryGetValues("Authorization", out var vb) == true
+    && vb.First() == "Bearer tok-1");
+
+var capKey = new CaptureHandler(HttpStatusCode.OK,
+    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n" +
+    "data: [DONE]\n");
+var capKeyClient = new ChatClient(new HttpClient(capKey)
+{
+    BaseAddress = new Uri(AthenaApi.WorkerBase),
+});
+await capKeyClient.SendMessageAsync("hello", "key-1", "c1", null, viaVoice: false);
+Check("m2: chat with key only sends X-Vesper-Key (grace)",
+    capKey.LastRequest?.Headers.TryGetValues("X-Vesper-Key", out var kb) == true
+    && kb.First() == "key-1");
+Check("m2: chat with key only sends NO Authorization header",
+    capKey.LastRequest?.Headers.Contains("Authorization") == false);
+
+var capAuth = new CaptureHandler(HttpStatusCode.BadRequest, "{}");
+var capAuthClient = new ChatClient(new HttpClient(capAuth)
+{
+    BaseAddress = new Uri(AthenaApi.WorkerBase),
+});
+Eq("m2: ValidateAuthAsync with token 400 means valid",
+    await capAuthClient.ValidateAuthAsync("tok-1", null), KeyValidationResult.Valid);
+var noCredsThrew = false;
+try { await capAuthClient.SendMessageAsync("hi", null, "c1", null, viaVoice: false); }
+catch (ArgumentException) { noCredsThrew = true; }
+Check("m2: chat with neither token nor key rejected client-side", noCredsThrew);
+
+// DataClient: Bearer token is used for reads when stored.
+var capData = new CaptureHandler(HttpStatusCode.OK,
+    "{\"exported_at\":\"2026-11-17T12:00:00.000Z\",\"count\":0,\"messages\":[]}");
+var capDataClient = new DataClient(new HttpClient(capData)
+{
+    BaseAddress = new Uri(AthenaApi.WorkerBase),
+});
+await capDataClient.GetBackupAsync("key-1", authToken: "tok-1");
+Check("m2: backup with token sends Authorization Bearer",
+    capData.LastRequest?.Headers.TryGetValues("Authorization", out var db) == true
+    && db.First() == "Bearer tok-1");
+Check("m2: backup with token sends NO site-key header",
+    capData.LastRequest?.Headers.Contains("X-Vesper-Key") == false);
+
+// ---------- DPAPI token storage (Windows-only) ----------
+if (OperatingSystem.IsWindows())
+{
+    SecureStore.SaveKey("m2-test-key-roundtrip");
+    SecureStore.SaveToken("m2-test-token-roundtrip");
+    Eq("m2 dpapi: token round-trips",
+        SecureStore.TryLoadToken(), "m2-test-token-roundtrip");
+    Eq("m2 dpapi: saving a token keeps the key",
+        SecureStore.TryLoadKey(), "m2-test-key-roundtrip");
+    SecureStore.DeleteKey();
+    Check("m2 dpapi: DeleteKey removes the key but keeps the token",
+        SecureStore.TryLoadKey() is null
+        && SecureStore.TryLoadToken() == "m2-test-token-roundtrip");
+    SecureStore.DeleteToken();
+    Check("m2 dpapi: DeleteToken removes the token (sign out)",
+        SecureStore.TryLoadToken() is null);
+}
+else
+{
+    Console.WriteLine("SKIP m2 dpapi: Windows-only (run on the laptop to verify).");
+}
+
 // ---------- Live backend (only with ATHENA_TEST_KEY) ----------
 var liveKey = Environment.GetEnvironmentVariable("ATHENA_TEST_KEY");
 if (!string.IsNullOrWhiteSpace(liveKey))
@@ -599,6 +774,52 @@ else
     Check("m1: ActivityView has a Refresh button",
         activityXaml.Contains("x:Name=\"RefreshButton\""));
 
+    // N5 M2: password login + token migration + via_voice (structural:
+    // the window itself needs Windows).
+    var authCs = File.ReadAllText(Path.Combine(appDir, "..", "Athena.Core", "AuthClient.cs"));
+    Check("m2: AuthClient exists with the auth endpoints",
+        authCs.Contains("/api/auth/login") && authCs.Contains("/api/auth/setup")
+        && authCs.Contains("/api/auth/exchange") && authCs.Contains("/api/auth/status"));
+    Check("m2: AuthClient sends Bearer tokens",
+        authCs.Contains("\"Bearer \""));
+    Check("m2: via_voice is built only for mic messages",
+        authCs.Contains("via_voice"));
+    Check("m2: password minimum is 8",
+        authCs.Contains("MinPasswordLength = 8"));
+    var setupXaml = File.ReadAllText(Path.Combine(appDir, "SetupWindow.xaml"));
+    Check("m2: SetupWindow is a password screen, not a key paste",
+        setupXaml.Contains("x:Name=\"PasswordBox\"")
+        && setupXaml.Contains("x:Name=\"ConfirmBox\"")
+        && setupXaml.Contains("Sign in"));
+    var setupCs = File.ReadAllText(Path.Combine(appDir, "SetupWindow.xaml.cs"));
+    Check("m2: SetupWindow logs in via /api/auth/login",
+        setupCs.Contains("LoginAsync"));
+    Check("m2: SetupWindow sets up via /api/auth/setup",
+        setupCs.Contains("SetupAsync"));
+    Check("m2: SetupWindow checks /api/auth/status for its mode",
+        setupCs.Contains("GetStatusAsync"));
+    Check("m2: SetupWindow stores the token, never the password",
+        setupCs.Contains("SaveToken") && !setupCs.Contains("SavePassword"));
+    Check("m2: SetupWindow keeps a legacy key fallback for pre-deploy",
+        setupCs.Contains("LegacyKey"));
+    Check("m2: MainWindow migrates a stored key to a token on startup",
+        mainCs.Contains("ExchangeAsync") && mainCs.Contains("DeleteKey")
+        && mainCs.Contains("TryLoadToken"));
+    Check("m2: MainWindow validates with the token first",
+        mainCs.Contains("ValidateAuthAsync"));
+    Check("m2: ChatView tracks mic origin in a flag",
+        chatViewCs.Contains("_micFilled"));
+    Check("m2: ChatView clears the mic flag on hand edits",
+        chatViewCs.Contains("InputBox_TextChanged"));
+    Check("m2: ChatView passes via_voice to the chat client",
+        chatViewCs.Contains("viaVoice"));
+    Check("m2: ChatView never tags device commands as voice",
+        chatViewCs.Contains("viaVoice = _micFilled && !deviceCommand"));
+    Check("m2: DevicesView hints the wolf word, with no button for it",
+        devicesCs.Contains("wolf") && devicesCs.Contains("no button for it"));
+    Check("m2: DevicesView has no tap-to-revoke button",
+        !devicesCs.Contains("RevokeButton") && !devicesCs.Contains("revokeButton"));
+
     // N4 voice wiring (structural: SAPI itself needs Windows).
     Check("voice: System.Speech referenced",
         csprojText.Contains("<PackageReference Include=\"System.Speech\""));
@@ -660,5 +881,30 @@ sealed class CountingHandler : HttpMessageHandler
             Content = new StringContent("data: [DONE]\n", Encoding.UTF8,
                 "text/event-stream"),
         });
+    }
+}
+
+/// <summary>Records the last request (headers + body) so M2 tests can prove which auth header was sent and whether via_voice was tagged.</summary>
+sealed class CaptureHandler : HttpMessageHandler
+{
+    public HttpRequestMessage? LastRequest;
+    public string LastBody = "";
+    private readonly HttpStatusCode _status;
+    private readonly string _body;
+    public CaptureHandler(HttpStatusCode status, string body)
+    {
+        _status = status;
+        _body = body;
+    }
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken ct)
+    {
+        LastRequest = request;
+        if (request.Content is not null)
+            LastBody = await request.Content.ReadAsStringAsync(ct);
+        return new HttpResponseMessage(_status)
+        {
+            Content = new StringContent(_body, Encoding.UTF8, "application/json"),
+        };
     }
 }

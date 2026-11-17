@@ -28,15 +28,15 @@ public partial class MemoryVaultView : UserControl, IRefreshable
         ListPanel.Children.Add(ViewHelpers.MutedText("Loading…"));
         try
         {
-            if (string.IsNullOrWhiteSpace(state.ApiKey))
+            if (!state.HasAuth)
             {
                 ListPanel.Children.Clear();
                 ListPanel.Children.Add(ViewHelpers.MutedText(
-                    "Set your site key first to see memory."));
+                    "Sign in first to see memory."));
                 return;
             }
 
-            var list = await state.Data.GetMemoriesAsync(state.ApiKey, state.ConversationId);
+            var list = await state.Data.GetMemoriesAsync(state.ApiKey, state.ConversationId, authToken: state.AuthToken);
             ListPanel.Children.Clear();
             if (list is null)
             {

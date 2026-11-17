@@ -36,15 +36,15 @@ public partial class DevicesView : UserControl, IRefreshable
         ContentPanel.Children.Add(ViewHelpers.MutedText("Loading…"));
         try
         {
-            if (string.IsNullOrWhiteSpace(state.ApiKey))
+            if (!state.HasAuth)
             {
                 ContentPanel.Children.Clear();
                 ContentPanel.Children.Add(ViewHelpers.MutedText(
-                    "Set your site key first to see device status."));
+                    "Sign in first to see device status."));
                 return;
             }
 
-            var status = await state.Data.GetDeviceStatusAsync(state.ApiKey);
+            var status = await state.Data.GetDeviceStatusAsync(state.ApiKey, authToken: state.AuthToken);
             ContentPanel.Children.Clear();
             if (status is null)
             {
@@ -149,6 +149,14 @@ public partial class DevicesView : UserControl, IRefreshable
             unpairButton.Click += (_, _) => ShowUnpairSteps(unpairBody, status.Device ?? "the laptop");
             unpairBody.Children.Add(unpairButton);
             ContentPanel.Children.Add(unpairCard);
+
+            // N5 M2: voice-only revoke. Saying "wolf" into the mic
+            // unpairs the laptop (the spoken message is tagged
+            // via_voice and the Worker enforces the guard). There is
+            // deliberately NO tap-to-revoke button anywhere — this
+            // hint line is the only mention in the app.
+            ContentPanel.Children.Add(ViewHelpers.MutedText(
+                "Tip: saying \u201cwolf\u201d into the mic unpairs this laptop — there is no button for it."));
 
             ContentPanel.Children.Add(ViewHelpers.MutedText(
                 "Approvals appear as a popup on the laptop screen — ATHENA never approves anything by itself."));
