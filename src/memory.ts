@@ -44,6 +44,7 @@
  */
 
 import type { Env, ChatMessage } from "./types";
+import { filterHistoryMessages } from "./messages";
 
 // ---------------------------------------------------------------------------
 // Credential detection and redaction
@@ -218,6 +219,11 @@ export function buildModelMessages(
 	systemPrompt: string,
 	memoryBlock: string,
 ): ChatMessage[] {
+	// History is filtered independently here too, not just in
+	// loadHistory: only server-created user and assistant turns
+	// reach the model. A system or tool row in stored history can
+	// never slip through if one filter is ever missed.
+	const cleanHistory = filterHistoryMessages(history);
 	const dropped = incoming.filter((m) => m.role !== "user");
 	if (dropped.length > 0) {
 		console.warn(
@@ -226,7 +232,7 @@ export function buildModelMessages(
 	}
 	return [
 		{ role: "system", content: systemPrompt + memoryBlock },
-		...history,
+		...cleanHistory,
 		...incoming.filter((m) => m.role === "user"),
 	];
 }

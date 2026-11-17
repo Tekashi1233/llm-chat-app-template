@@ -21,6 +21,10 @@ import {
 	checkRateLimit,
 	RATE_LIMITS,
 } from "./security";
+import {
+	filterHistoryMessages,
+	validateIncomingMessages,
+} from "./messages";
 
 // Model ID for Workers AI model
 // https://developers.cloudflare.com/workers-ai/models/
@@ -360,11 +364,17 @@ async function handleChatRequest(
 			});
 		}
 
-		// Parse JSON request body
+		// Parse JSON request body, then validate at the API boundary:
+		// only user-role messages are accepted. System, assistant
+		// and tool messages in the request are discarded. The
+		// validated list is the single source of truth for both the
+		// model context and what gets stored, so the two can never
+		// drift apart.
 		const { messages = [], conversation_id = "default" } = (await request.json()) as {
 			messages: ChatMessage[];
 			conversation_id?: string;
 		};
+		const userMessages = validateIncomingMessages(messages);
 
 		// Load recent conversation history from D1 memory
 		const history = await loadHistory(env, conversation_id);
@@ -372,7 +382,7 @@ async function handleChatRequest(
 		// Load long-term memories relevant to the latest user message.
 		// Scoped to this conversation_id: memories never leak to
 		// another browser or device.
-		const latestUserText = [...messages]
+		const latestUserText = [...userMessages]
 			.reverse()
 			.find((msg) => msg.role === "user")?.content ?? "";
 		const memories = await loadMemories(env, conversation_id, latestUserText);
@@ -386,7 +396,7 @@ async function handleChatRequest(
 		// a tool result. (The live frontend only ever sends a user
 		// message.)
 		const modelMessages = buildModelMessages(
-			messages,
+			userMessages,
 			history,
 			SYSTEM_PROMPT,
 			memoryBlock,
@@ -424,7 +434,10 @@ async function handleChatRequest(
 					"Sorry, I didn't manage to answer that. Could you try again?",
 			);
 		} else {
-			// Step 2: run the tools, then stream the final answer
+			// Step 2: run the tools, then stream the final answer.
+			// Tool messages are created here, exclusively, from the
+			// server's own executeTool results — never from the
+			// caller's history and never from a stored row.
 			const calls = toolCalls.slice(0, 3);
 			const toolMessages: ChatMessage[] = [];
 			for (const call of calls) {
@@ -482,10 +495,12 @@ async function handleChatRequest(
 		}
 
 		// Split the stream: one branch goes to the browser, the other is
-		// read in the background so the full reply can be saved to memory
+		// read in the background so the full reply can be saved to memory.
+		// Only the validated user messages are stored — never anything
+		// the caller forged.
 		const [clientBranch, memoryBranch] = clientStream.tee();
 		ctx.waitUntil(
-			saveConversation(env, conversation_id, messages, memoryBranch).catch(
+			saveConversation(env, conversation_id, userMessages, memoryBranch).catch(
 				(err) => console.error("Failed to save conversation:", err),
 			),
 		);
@@ -600,10 +615,13 @@ const HISTORY_LIMIT = 20;
 
 /**
  * Loads the most recent messages of one conversation from D1.
- * Returns them oldest-first. Never throws: on any failure the chat
- * simply continues without memory.
+ * Returns them oldest-first. Only server-created user and assistant
+ * turns are returned: filterHistoryMessages drops any system or
+ * tool row that somehow got into the table, and buildModelMessages
+ * filters the history a second time. Never throws: on any failure
+ * the chat simply continues without memory. Exported for testing.
  */
-async function loadHistory(
+export async function loadHistory(
 	env: Env,
 	conversationId: string,
 ): Promise<ChatMessage[]> {
@@ -614,13 +632,15 @@ async function loadHistory(
 		)
 			.bind(conversationId, HISTORY_LIMIT)
 			.all<{ role: string; content: string }>();
-		return (rows.results ?? [])
-			.reverse()
-			.filter((row) => row.role === "user" || row.role === "assistant")
-			.map((row) => ({
-				role: row.role as "user" | "assistant",
-				content: row.content,
-			}));
+		return filterHistoryMessages(
+			(rows.results ?? [])
+				.reverse()
+				.filter((row) => row.role === "user" || row.role === "assistant")
+				.map((row) => ({
+					role: row.role as "user" | "assistant",
+					content: row.content,
+				})),
+		);
 	} catch (error) {
 		console.error("Failed to load history:", error);
 		return [];
@@ -629,12 +649,19 @@ async function loadHistory(
 
 /**
  * Saves the new user message(s) and the streamed assistant reply to D1.
+ * `newMessages` must already be validated by validateIncomingMessages
+ * (handleChatRequest passes only those); the role check below is a
+ * second layer, so a caller-supplied system, assistant or tool
+ * message can never be persisted even if validation is ever bypassed.
+ * The assistant reply stored here is the one the server itself
+ * streamed back — never a caller-supplied message.
  * Before anything is written, credential-looking values are redacted
  * (passwords, keys, tokens, secrets become [redacted]) so a secret
  * the user pastes can never sit in the messages table. The reply the
  * user sees live is not changed — only the stored copy is redacted.
+ * Exported for testing.
  */
-async function saveConversation(
+export async function saveConversation(
 	env: Env,
 	conversationId: string,
 	newMessages: ChatMessage[],
