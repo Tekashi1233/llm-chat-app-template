@@ -93,6 +93,7 @@ public partial class DevicesView : UserControl, IRefreshable
             var runCard = ViewHelpers.Card("Run on your laptop", out var runBody);
             runBody.Children.Add(ViewHelpers.MutedText(
                 "These send a message in chat — ATHENA runs them on the laptop behind its allowlist. File writes still ask you on the laptop screen first."));
+            var actionButtons = new List<Button>();
             foreach (var action in DeviceQuickActions.All)
             {
                 var prompt = action.Prompt;
@@ -109,6 +110,7 @@ public partial class DevicesView : UserControl, IRefreshable
                     Cursor = System.Windows.Input.Cursors.Hand,
                     IsEnabled = status.Online && _sendDeviceCommand is not null,
                 };
+                actionButtons.Add(button);
                 button.Click += async (_, _) =>
                 {
                     button.IsEnabled = false;
@@ -119,7 +121,28 @@ public partial class DevicesView : UserControl, IRefreshable
                     }
                     finally
                     {
-                        button.IsEnabled = status.Online && _sendDeviceCommand is not null;
+                        // N5 M3: the status captured before the turn
+                        // is stale — the turn may have ended in
+                        // error or timeout, and the laptop may have
+                        // gone offline while it ran. Re-check the
+                        // laptop now and set every button from the
+                        // fresh status. If the re-check itself
+                        // fails, leave every button disabled until
+                        // the next refresh: never re-enable from
+                        // stale knowledge.
+                        try
+                        {
+                            var fresh = await _state.Data.GetDeviceStatusAsync(
+                                _state.ApiKey, authToken: _state.AuthToken);
+                            var online = fresh?.Online == true;
+                            foreach (var b in actionButtons)
+                                b.IsEnabled = online && _sendDeviceCommand is not null;
+                        }
+                        catch
+                        {
+                            foreach (var b in actionButtons)
+                                b.IsEnabled = false;
+                        }
                     }
                 };
                 runBody.Children.Add(button);
@@ -165,8 +188,12 @@ public partial class DevicesView : UserControl, IRefreshable
         }
         catch (Exception ex)
         {
+            // N5 M3: a failed refresh never leaves a blank panel
+            // and never keeps stale data on screen — the panel is
+            // cleared and shows what happened plus what to do next.
             ContentPanel.Children.Clear();
             ContentPanel.Children.Add(ViewHelpers.BodyText(ViewHelpers.FriendlyError(ex)));
+            ContentPanel.Children.Add(ViewHelpers.MutedText(ViewHelpers.RetryHintRefresh));
         }
     }
 

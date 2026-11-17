@@ -63,8 +63,12 @@ public partial class ActivityView : UserControl, IRefreshable
         }
         catch (Exception ex)
         {
+            // N5 M3: a failed refresh never leaves a blank panel
+            // and never keeps stale rows on screen — the panel is
+            // cleared and shows what happened plus what to do next.
             ContentPanel.Children.Clear();
             ContentPanel.Children.Add(ViewHelpers.BodyText(ViewHelpers.FriendlyError(ex)));
+            ContentPanel.Children.Add(ViewHelpers.MutedText(ViewHelpers.RetryHintRefresh));
         }
     }
 }

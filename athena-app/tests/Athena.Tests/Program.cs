@@ -563,6 +563,75 @@ else
     Console.WriteLine("SKIP m2 dpapi: Windows-only (run on the laptop to verify).");
 }
 
+// ---------- N5 M3: honest offline/error states ----------
+// Gap 1: HTTP 500 is plain language — problem + not answered +
+// try again — and claims no cause (a 500 can be the daily AI
+// quota or a real fault; the app cannot tell which).
+var mockChat500 = new ChatClient(MockClient((HttpStatusCode)500));
+var chat500Msg = "";
+try { await mockChat500.SendMessageAsync("hello", "k", "c1"); }
+catch (AthenaApiException ex) { chat500Msg = ex.Message; }
+Eq("m3: chat 500 is the plain-language service-problem message",
+    chat500Msg, ErrorMessages.ServiceProblemChat);
+Check("m3: chat 500 message states problem + not answered + try again",
+    ErrorMessages.ServiceProblemChat.Contains("had a problem")
+    && ErrorMessages.ServiceProblemChat.Contains("not answered")
+    && ErrorMessages.ServiceProblemChat.Contains("try again"));
+Check("m3: chat 500 message claims no cause (no quota, no bare status)",
+    !ErrorMessages.ServiceProblemChat.Contains("quota", StringComparison.OrdinalIgnoreCase)
+    && !ErrorMessages.ServiceProblemChat.Contains("HTTP 500")
+    && !ErrorMessages.ServiceProblemChat.Contains("limit", StringComparison.OrdinalIgnoreCase));
+
+var mockData500 = new DataClient(MockClient((HttpStatusCode)500));
+async Task<string?> Data500Message(Func<DataClient, Task> call)
+{
+    try { await call(mockData500); return null; }
+    catch (AthenaApiException ex) { return ex.Message; }
+}
+Eq("m3: device status 500 is the plain-language request message",
+    await Data500Message(d => d.GetDeviceStatusAsync("k")),
+    ErrorMessages.ServiceProblemRequest);
+Eq("m3: device activity 500 is the plain-language request message",
+    await Data500Message(d => d.GetDeviceActivityAsync("k")),
+    ErrorMessages.ServiceProblemRequest);
+Eq("m3: memories 500 is the plain-language request message",
+    await Data500Message(d => d.GetMemoriesAsync("k", "c1")),
+    ErrorMessages.ServiceProblemRequest);
+Eq("m3: backup 500 is the plain-language request message",
+    await Data500Message(d => d.GetBackupAsync("k")),
+    ErrorMessages.ServiceProblemRequest);
+Check("m3: request 500 message states problem + not answered + try again",
+    ErrorMessages.ServiceProblemRequest.Contains("had a problem")
+    && ErrorMessages.ServiceProblemRequest.Contains("not answered")
+    && ErrorMessages.ServiceProblemRequest.Contains("try again"));
+Check("m3: request 500 message claims no cause",
+    !ErrorMessages.ServiceProblemRequest.Contains("quota", StringComparison.OrdinalIgnoreCase)
+    && !ErrorMessages.ServiceProblemRequest.Contains("HTTP 500"));
+
+var mockAuth500 = new AuthClient(MockClient((HttpStatusCode)500));
+var auth500Msg = "";
+try { await mockAuth500.LoginAsync("some-password"); }
+catch (AthenaApiException ex) { auth500Msg = ex.Message; }
+Eq("m3: auth 500 is the plain-language request message",
+    auth500Msg, ErrorMessages.ServiceProblemRequest);
+
+// Other 5xx stay generic — only 500 gets the plain-language text.
+var mockChat503 = new ChatClient(MockClient((HttpStatusCode)503));
+var chat503Msg = "";
+try { await mockChat503.SendMessageAsync("hello", "k", "c1"); }
+catch (AthenaApiException ex) { chat503Msg = ex.Message; }
+Eq("m3: chat 503 stays a bare status (only 500 is reworded)",
+    chat503Msg, "The service returned HTTP 503.");
+
+// Gap 4 (core side): the approved-prompt guard rejects anything
+// not on the list — null, wrong case, trailing space.
+Check("m3: null prompt is not approved",
+    !DeviceQuickActions.IsApprovedPrompt(null!));
+Check("m3: prompt matching is case-sensitive",
+    !DeviceQuickActions.IsApprovedPrompt("ping google.com"));
+Check("m3: prompt with trailing space is not approved",
+    !DeviceQuickActions.IsApprovedPrompt("Ping google.com "));
+
 // ---------- Live backend (only with ATHENA_TEST_KEY) ----------
 var liveKey = Environment.GetEnvironmentVariable("ATHENA_TEST_KEY");
 if (!string.IsNullOrWhiteSpace(liveKey))
@@ -846,6 +915,61 @@ else
         mainCs.Contains("new VoiceService()"));
     Check("voice: MainWindow disposes voice on close",
         mainCs.Contains("Voice?.Dispose()"));
+
+    // N5 M3: honest offline/error states (structural: the views
+    // themselves need Windows).
+    var chatClientCs = File.ReadAllText(Path.Combine(appDir, "..", "Athena.Core", "ChatClient.cs"));
+    var dataClientCs = File.ReadAllText(Path.Combine(appDir, "..", "Athena.Core", "DataClient.cs"));
+    var activityCs = File.ReadAllText(Path.Combine(appDir, "Views", "ActivityView.xaml.cs"));
+    var memoryCs = File.ReadAllText(Path.Combine(appDir, "Views", "MemoryVaultView.xaml.cs"));
+    Check("m3: chat maps 500 to the plain-language message",
+        chatClientCs.Contains("500 => ErrorMessages.ServiceProblemChat"));
+    Check("m3: device reads map 500 to the plain-language message",
+        dataClientCs.Contains("500 => ErrorMessages.ServiceProblemRequest"));
+    Check("m3: auth maps 500 to the plain-language message",
+        authCs.Contains("500 => ErrorMessages.ServiceProblemRequest"));
+    Check("m3: no core client quotes a bare HTTP 500 anywhere",
+        !chatClientCs.Contains("HTTP 500") && !dataClientCs.Contains("HTTP 500")
+        && !authCs.Contains("HTTP 500"));
+    Check("m3: FriendlyError passes the service message through unchanged",
+        File.ReadAllText(Path.Combine(appDir, "Views", "ViewHelpers.cs"))
+            .Contains("AthenaApiException api => api.Message"));
+    Check("m3: Devices refresh failure shows what to do next",
+        devicesCs.Contains("RetryHintRefresh"));
+    Check("m3: Activity refresh failure shows what to do next",
+        activityCs.Contains("RetryHintRefresh"));
+    Check("m3: Memory Vault refresh failure shows what to do next",
+        memoryCs.Contains("RetryHintReopen"));
+    Check("m3: Memory Vault clears cached rows on a failed refresh",
+        memoryCs.Contains("_all = new();"));
+    Check("m3: Memory Vault clears the detail pane on a failed refresh",
+        memoryCs.Contains("ShowNoMemorySelected()"));
+    Check("m3: quick actions re-check status after a turn",
+        devicesCs.Split("GetDeviceStatusAsync").Length - 1 >= 2);
+    Check("m3: quick actions never re-enable from the captured status",
+        !devicesCs.Contains("button.IsEnabled = status.Online"));
+    Check("m3: quick actions take the fresh status after a turn",
+        devicesCs.Contains("b.IsEnabled = online && _sendDeviceCommand is not null"));
+    Check("m3: a failed status re-check leaves the buttons disabled",
+        devicesCs.Contains("b.IsEnabled = false"));
+    // Gap 4: the refused-prompt path in SendDeviceCommandAsync
+    // must return before any send — and add no bubble. Bubbles
+    // are only added inside SendAsync via AddMessage, so a
+    // refused prompt that never reaches SendAsync can never
+    // show a fake success.
+    var gateStart = chatViewCs.IndexOf("SendDeviceCommandAsync", StringComparison.Ordinal);
+    var gateBody = gateStart >= 0
+        ? chatViewCs[gateStart..chatViewCs.IndexOf(
+            "private async Task SendAsync", gateStart, StringComparison.Ordinal)]
+        : "";
+    Check("m3: refused device prompt returns before sending",
+        gateBody.Contains("IsApprovedPrompt")
+        && gateBody.Contains("return Task.CompletedTask;"));
+    Check("m3: the guard runs before the send",
+        gateBody.IndexOf("IsApprovedPrompt", StringComparison.Ordinal)
+        < gateBody.IndexOf("SendAsync", StringComparison.Ordinal));
+    Check("m3: refused device prompt adds no bubble",
+        !gateBody.Contains("AddMessage"));
 }
 
 Console.WriteLine($"\n{passes} passed, {failures.Count} failed");

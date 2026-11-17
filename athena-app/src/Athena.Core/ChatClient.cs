@@ -118,6 +118,7 @@ public sealed class ChatClient : IDisposable
         {
             401 => "Not authorised — sign in again, or the site key is missing or wrong.",
             429 => "Too many requests — wait a minute and try again.",
+            500 => ErrorMessages.ServiceProblemChat,
             _ => $"The service returned HTTP {status}.",
         });
 }
