@@ -37,8 +37,11 @@ public sealed class DataClient : IDisposable
         if (!res.IsSuccessStatusCode)
             throw new AthenaApiException((int)res.StatusCode,
                 $"Could not read model info (HTTP {(int)res.StatusCode}).");
-        return (await res.Content.ReadFromJsonAsync<ModelInfo>(ct))
+        var info = (await res.Content.ReadFromJsonAsync<ModelInfo>(ct))
             ?? throw new AthenaApiException(0, "Model info came back empty.");
+        // N6: a missing "tools" array must not NRE the views that
+        // read Tools.Length / IsRegistered — normalise to empty.
+        return info.Tools is null ? info with { Tools = Array.Empty<string>() } : info;
     }
 
     /// <summary>GET /api/backup. Bearer token when stored, else site key (grace). Up to 5000 messages.</summary>
@@ -50,8 +53,12 @@ public sealed class DataClient : IDisposable
         using var res = await _http.SendAsync(req, ct);
         if (!res.IsSuccessStatusCode)
             throw MapError((int)res.StatusCode);
-        return (await res.Content.ReadFromJsonAsync<BackupExport>(ct))
+        var export = (await res.Content.ReadFromJsonAsync<BackupExport>(ct))
             ?? throw new AthenaApiException(0, "Backup came back empty.");
+        // N6: a missing "messages" array must not NRE the views.
+        return export.Messages is null
+            ? export with { Messages = Array.Empty<BackupMessage>() }
+            : export;
     }
 
     /// <summary>
@@ -69,7 +76,12 @@ public sealed class DataClient : IDisposable
         if ((int)res.StatusCode == 404) return null;
         if (!res.IsSuccessStatusCode)
             throw MapError((int)res.StatusCode);
-        return await res.Content.ReadFromJsonAsync<MemoryList>(ct);
+        var list = await res.Content.ReadFromJsonAsync<MemoryList>(ct);
+        // N6: a missing "memories" array must not NRE the Vault.
+        return list is null ? null
+            : list.Memories is null
+            ? list with { Memories = Array.Empty<MemoryRecord>() }
+            : list;
     }
 
     /// <summary>
@@ -102,7 +114,12 @@ public sealed class DataClient : IDisposable
         if ((int)res.StatusCode == 404) return null;
         if (!res.IsSuccessStatusCode)
             throw MapError((int)res.StatusCode);
-        return await res.Content.ReadFromJsonAsync<DeviceActivityList>(ct);
+        var list = await res.Content.ReadFromJsonAsync<DeviceActivityList>(ct);
+        // N6: a missing "actions" array must not NRE the view.
+        return list is null ? null
+            : list.Actions is null
+            ? list with { Actions = Array.Empty<DeviceAction>() }
+            : list;
     }
 
     private static AthenaApiException MapError(int status) => new(status,

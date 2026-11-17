@@ -43,8 +43,14 @@ public partial class ConversationsView : UserControl, IRefreshable
         }
         catch (Exception ex)
         {
+            // N6: a failed refresh never leaves a stale list behind
+            // — the cached rows are cleared (typing in the search
+            // box afterwards must not resurrect them as current)
+            // and the panel shows what happened plus what to do next.
+            _all = new();
             ListPanel.Children.Clear();
             ListPanel.Children.Add(ViewHelpers.BodyText(ViewHelpers.FriendlyError(ex)));
+            ListPanel.Children.Add(ViewHelpers.MutedText(ViewHelpers.RetryHintReopen));
         }
     }
 

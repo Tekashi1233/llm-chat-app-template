@@ -632,6 +632,133 @@ Check("m3: prompt matching is case-sensitive",
 Check("m3: prompt with trailing space is not approved",
     !DeviceQuickActions.IsApprovedPrompt("Ping google.com "));
 
+// ---------- N6: security / reliability / release ----------
+// All tests here are VM/simulated only — nothing here proves
+// anything about the real laptop; that needs the owner's device.
+
+// Message length cap: 8000 characters, enforced before any HTTP.
+Check("n6: message at the cap is within the limit",
+    MessageValidation.IsWithinLengthLimit(new string('x', MessageValidation.MaxMessageLength)));
+Check("n6: message over the cap is too long",
+    !MessageValidation.IsWithinLengthLimit(new string('x', MessageValidation.MaxMessageLength + 1)));
+Check("n6: null is within the length limit",
+    MessageValidation.IsWithinLengthLimit(null));
+var longCounting = new CountingHandler();
+var longClient = new ChatClient(new HttpClient(longCounting)
+{
+    BaseAddress = new Uri(AthenaApi.WorkerBase),
+});
+var longThrew = false;
+try { await longClient.SendMessageAsync(new string('x', MessageValidation.MaxMessageLength + 1), "k", "c1"); }
+catch (ArgumentException) { longThrew = true; }
+Check("n6: over-long message rejected client-side, no HTTP call",
+    longThrew && longCounting.Calls == 0);
+
+// Chat 429: plain-language rate-limit message, status kept.
+var mockChat429 = new ChatClient(MockClient((HttpStatusCode)429));
+var chat429Msg = "";
+var chat429Status = 0;
+try { await mockChat429.SendMessageAsync("hello", "k", "c1"); }
+catch (AthenaApiException ex) { chat429Msg = ex.Message; chat429Status = ex.StatusCode; }
+Eq("n6: chat 429 maps to the rate-limit message",
+    chat429Msg, "Too many requests — wait a minute and try again.");
+Eq("n6: chat 429 keeps its status", chat429Status, 429);
+
+// Null tool list: IsRegistered must not throw, and DataClient
+// must normalise a missing "tools" array to empty.
+var nullToolsInfo = new ModelInfo("ATHENA", "p", "m", "medium",
+    true, null!, "auth", "memory", "configured");
+Check("n6: IsRegistered with a null tools array is false, no throw",
+    !ToolCatalog.All.First(t => t.Name == "get_weather").IsRegistered(nullToolsInfo));
+var mockInfoNoTools = new DataClient(MockClient(HttpStatusCode.OK,
+    "{\"assistant\":\"ATHENA\",\"provider\":\"p\",\"configured_model\":\"m\"," +
+    "\"reasoning_effort\":\"medium\",\"streaming\":true," +
+    "\"auth\":\"x\",\"memory\":\"d1\",\"status\":\"configured\"}"));
+var noToolsInfo = await mockInfoNoTools.GetModelInfoAsync();
+Check("n6: model-info without tools normalises to an empty array",
+    noToolsInfo.Tools.Length == 0);
+Check("n6: normalised model-info reports no tool registered",
+    !ToolCatalog.All.First(t => t.Name == "get_weather").IsRegistered(noToolsInfo));
+
+// Null arrays from the server: normalised to empty, never null.
+var mockBackupNoMsgs = new DataClient(MockClient(HttpStatusCode.OK,
+    "{\"exported_at\":\"2026-11-17T12:00:00.000Z\",\"count\":0}"));
+var noMsgsBackup = await mockBackupNoMsgs.GetBackupAsync("k");
+Check("n6: backup without messages normalises to an empty array",
+    noMsgsBackup.Messages.Length == 0);
+var mockMemNoRows = new DataClient(MockClient(HttpStatusCode.OK,
+    "{\"conversation_id\":\"c1\",\"count\":0}"));
+var noRowsMem = await mockMemNoRows.GetMemoriesAsync("k", "c1");
+Check("n6: memories without rows normalises to an empty array",
+    noRowsMem?.Memories.Length == 0);
+var mockActNoRows = new DataClient(MockClient(HttpStatusCode.OK,
+    "{\"device\":null,\"count\":0}"));
+var noRowsAct = await mockActNoRows.GetDeviceActivityAsync("k");
+Check("n6: activity without rows normalises to an empty array",
+    noRowsAct?.Actions.Length == 0);
+
+// Null message content: truncation and grouping must not throw.
+Eq("n6: TruncateTitle(null) is empty", ConversationStore.TruncateTitle(null), "");
+Eq("n6: TruncateSnippet(null) is empty", ConversationStore.TruncateSnippet(null), "");
+var nullContentMsgs = new[]
+{
+    Msg(1, "c1", "user", "Hello", nowMs - 1000),
+    new BackupMessage(2, "c1", "assistant", null!, nowMs, "server"),
+};
+var nullGrouped = ConversationStore.GroupMessages(nullContentMsgs);
+Check("n6: null message content groups without throwing, snippet empty",
+    nullGrouped.Count == 1 && nullGrouped[0].LastSnippet == "");
+
+// Corrupt local config falls back cleanly (never throws).
+// The test writes to the exact path SecureStore derives
+// (%APPDATA%\Athena\config.json on Windows, ~/.config/Athena
+// on this VM) — the app's own file, never a user document —
+// backs up whatever was there first, and restores it (or
+// deletes the file again) afterwards. On this VM there is no
+// real Athena install, so the backup is normally empty.
+var n6ConfigPath = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+    "Athena", "config.json");
+var n6ConfigDir = Path.GetDirectoryName(n6ConfigPath)!;
+var n6DirExisted = Directory.Exists(n6ConfigDir);
+var n6HadFile = File.Exists(n6ConfigPath);
+var n6Backup = n6HadFile ? File.ReadAllBytes(n6ConfigPath) : null;
+try
+{
+    Directory.CreateDirectory(n6ConfigDir);
+    File.WriteAllText(n6ConfigPath, "{ not json");
+    Check("n6: corrupt config.json -> TryLoadKey returns null, no throw",
+        SecureStore.TryLoadKey() is null);
+    Check("n6: corrupt config.json -> TryLoadToken returns null, no throw",
+        SecureStore.TryLoadToken() is null);
+    File.WriteAllText(n6ConfigPath,
+        "{\"ProtectedKey\":null,\"ConversationId\":\"not-a-guid\",\"ProtectedToken\":null}");
+    var n6Id = SecureStore.GetOrCreateConversationId();
+    Check("n6: invalid conversation id is replaced with a valid Guid",
+        Guid.TryParse(n6Id, out _));
+    File.WriteAllText(n6ConfigPath,
+        "{\"ProtectedKey\":\"!!!not-base64!!!\",\"ConversationId\":\"" + n6Id + "\",\"ProtectedToken\":null}");
+    Check("n6: bad base64 key -> TryLoadKey returns null, no throw",
+        SecureStore.TryLoadKey() is null);
+    File.WriteAllText(n6ConfigPath, "");
+    Check("n6: empty config file -> TryLoadKey returns null, no throw",
+        SecureStore.TryLoadKey() is null);
+    Check("n6: empty config file -> TryLoadToken returns null, no throw",
+        SecureStore.TryLoadToken() is null);
+}
+finally
+{
+    try
+    {
+        if (n6HadFile) File.WriteAllBytes(n6ConfigPath, n6Backup!);
+        else if (File.Exists(n6ConfigPath)) File.Delete(n6ConfigPath);
+        if (!n6DirExisted && Directory.Exists(n6ConfigDir)
+            && !Directory.EnumerateFileSystemEntries(n6ConfigDir).Any())
+            Directory.Delete(n6ConfigDir);
+    }
+    catch (Exception) { }
+}
+
 // ---------- Live backend (only with ATHENA_TEST_KEY) ----------
 var liveKey = Environment.GetEnvironmentVariable("ATHENA_TEST_KEY");
 if (!string.IsNullOrWhiteSpace(liveKey))
@@ -970,6 +1097,66 @@ else
         < gateBody.IndexOf("SendAsync", StringComparison.Ordinal));
     Check("m3: refused device prompt adds no bubble",
         !gateBody.Contains("AddMessage"));
+
+    // N6: security / reliability / release (structural: the views
+    // themselves need Windows).
+    var convCs = File.ReadAllText(Path.Combine(appDir, "Views", "ConversationsView.xaml.cs"));
+    Check("n6: Conversations refresh failure clears the cached list",
+        convCs.Contains("_all = new();"));
+    Check("n6: Conversations refresh failure shows what to do next",
+        convCs.Contains("RetryHintReopen"));
+    var toolsCs = File.ReadAllText(Path.Combine(appDir, "Views", "ToolsView.xaml.cs"));
+    Check("n6: Tools refresh failure renders unknown availability, not stale info",
+        toolsCs.Contains("RenderTools(null)"));
+    Check("n6: Tools refresh failure shows what to do next",
+        toolsCs.Contains("RetryHintReopen"));
+    Check("n6: ChatView tells the user a message is too long",
+        chatViewCs.Contains("That message is too long"));
+    Check("n6: ChatView length check uses the shared cap",
+        chatViewCs.Contains("IsWithinLengthLimit"));
+    Check("n6: ChatView send has a generic catch (no crash out of the send handler)",
+        chatViewCs.Contains("Something went wrong and your message was not answered"));
+    Check("n6: welcome message says site key, not password",
+        mainCs.Contains("site key (menu")
+        && !mainCs.Contains("password (menu"));
+    Check("n6: corrupt config is treated as no config, not a crash",
+        File.ReadAllText(Path.Combine(appDir, "..", "Athena.Core", "SecureStore.cs"))
+            .Contains("JsonException"));
+    Check("n6: Memory Vault filter tolerates missing topic/fact",
+        memoryCs.Contains("(m.Topic ?? \"\")") && memoryCs.Contains("(m.Fact ?? \"\")"));
+    Check("n6: Memory Vault snippet tolerates a missing fact",
+        memoryCs.Contains("Snippet(string? fact)"));
+    var setupCs2 = File.ReadAllText(Path.Combine(appDir, "SetupWindow.xaml.cs"));
+    Check("n6: SetupWindow falls back to the site-key flow when the sign-in state cannot be checked",
+        setupCs2.Split("SetMode(SetupMode.LegacyKey)").Length - 1 == 2
+        && setupCs2.Split("SetMode(SetupMode.Login)").Length - 1 == 0);
+    Check("n6: SetupWindow sign-in failures end as honest messages, never crashes",
+        setupCs2.Split("Something went wrong — check your connection and try again.").Length - 1 == 3);
+    // No logging anywhere in the app: there is no log sink the
+    // site key (or a password) could leak into, by construction.
+    var n6LoggedFiles = Directory.GetFiles(Path.Combine(appDir, "..", "Athena.Core"), "*.cs", SearchOption.AllDirectories)
+        .Concat(Directory.GetFiles(Path.Combine(appDir, "Services"), "*.cs"))
+        .Concat(Directory.GetFiles(Path.Combine(appDir, "Views"), "*.cs"))
+        .Concat(new[]
+        {
+            Path.Combine(appDir, "MainWindow.xaml.cs"),
+            Path.Combine(appDir, "SetupWindow.xaml.cs"),
+            Path.Combine(appDir, "App.xaml.cs"),
+        });
+    Check("n6: no logging calls anywhere in the app source",
+        n6LoggedFiles.All(f =>
+        {
+            var text = File.ReadAllText(f);
+            return !text.Contains("Console.Write") && !text.Contains("Debug.Write")
+                && !text.Contains("Trace.Write");
+        }));
+    // Voice policy (structural: SAPI itself needs Windows).
+    var voiceCs = File.ReadAllText(Path.Combine(appDir, "Services", "VoiceService.cs"));
+    Check("n6: voice never starts listening on its own (recognition starts in one place only)",
+        voiceCs.Split("RecognizeAsync(").Length - 1 == 1
+        && voiceCs.Contains("RecognizeAsync(RecognizeMode.Multiple)"));
+    Check("n6: voice has no wake-word (dictation grammar only)",
+        voiceCs.Contains("new DictationGrammar()") && !voiceCs.Contains("GrammarBuilder"));
 }
 
 Console.WriteLine($"\n{passes} passed, {failures.Count} failed");

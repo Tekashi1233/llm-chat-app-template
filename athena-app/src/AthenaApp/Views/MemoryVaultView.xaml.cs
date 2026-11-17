@@ -95,8 +95,10 @@ public partial class MemoryVaultView : UserControl, IRefreshable
             (kind == "All" || m.Kind == kind) &&
             (status == "All" || m.Status == status) &&
             (query.Length == 0 ||
-                m.Topic.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                m.Fact.Contains(query, StringComparison.OrdinalIgnoreCase))).ToList();
+                // N6: a row with a missing topic/fact must not NRE
+                // the filter — it simply does not match.
+                (m.Topic ?? "").Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                (m.Fact ?? "").Contains(query, StringComparison.OrdinalIgnoreCase))).ToList();
 
         if (shown.Count == 0)
         {
@@ -139,9 +141,10 @@ public partial class MemoryVaultView : UserControl, IRefreshable
         return "All";
     }
 
-    private static string Snippet(string fact)
+    private static string Snippet(string? fact)
     {
-        var oneLine = fact.Trim().ReplaceLineEndings(" ");
+        // N6: a row with a missing fact shows an empty snippet, not a crash.
+        var oneLine = (fact ?? "").Trim().ReplaceLineEndings(" ");
         if (oneLine.Length <= 90) return oneLine;
         return oneLine[..89].TrimEnd() + "…";
     }

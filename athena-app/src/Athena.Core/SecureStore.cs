@@ -17,10 +17,14 @@ namespace Athena.Core;
 /// an insecure store. The conversation id is not a secret and is
 /// stored in plain text next to it.
 ///
-/// N5 M2: the token is the primary credential (password login).
-/// The site key is kept only for the grace period / migration:
-/// on startup a stored key is exchanged once for a token and then
-/// deleted from the config (see AuthValidation.ShouldMigrate).
+/// Auth (owner decision 2026-11-18): NO password — the site key is
+/// the sign-in. A stored key is exchanged once for a session token
+/// when the Worker offers one, then deleted from the config (see
+/// AuthValidation.ShouldMigrate); until an exchange succeeds the
+/// key stays and the app keeps working on it. A corrupt or
+/// unreadable config.json behaves as "nothing stored" (see
+/// ReadConfig) instead of crashing startup — the backend still
+/// holds the conversation history, so the user just signs in again.
 /// </summary>
 public static class SecureStore
 {
@@ -131,11 +135,26 @@ public static class SecureStore
         WriteConfig(new AppConfig(cfg.ProtectedKey, id, null));
     }
 
+    /// <summary>
+    /// N6: never throws. A corrupt, empty or unreadable config
+    /// behaves as "no config": callers treat the key/token as not
+    /// stored and ask the user to sign in again, instead of the
+    /// app crashing on startup over a damaged local file. The next
+    /// successful save rewrites the file cleanly.
+    /// </summary>
     private static AppConfig? ReadConfig()
     {
-        if (!File.Exists(ConfigPath)) return null;
-        var json = File.ReadAllText(ConfigPath);
-        return JsonSerializer.Deserialize<AppConfig>(json);
+        try
+        {
+            if (!File.Exists(ConfigPath)) return null;
+            var json = File.ReadAllText(ConfigPath);
+            return JsonSerializer.Deserialize<AppConfig>(json);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException
+            or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static void WriteConfig(AppConfig cfg)

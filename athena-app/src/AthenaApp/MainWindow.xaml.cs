@@ -114,8 +114,8 @@ public partial class MainWindow : Window
             SetStatus("Not signed in", Colors.Gray);
             _chatView.AddSystemMessage(
                 "Welcome to ATHENA. To start chatting, sign in with your " +
-                "password (menu (···) at the top right, then Settings). " +
-                "Your session is stored encrypted on this computer only.",
+                "site key (menu (···) at the top right, then Settings). " +
+                "Your key is stored encrypted on this computer only.",
                 isError: false);
             var setup = new SetupWindow(_state.Chat, _state.Auth);
             if (setup.ShowDialog() == true)
