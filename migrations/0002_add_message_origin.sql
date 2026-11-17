@@ -1,0 +1,24 @@
+-- P2-M1 rev6: provenance for conversation history (2026-11-17).
+--
+-- Adds origin to messages so a server-generated assistant reply can be
+-- distinguished from a row of unknown provenance. Existing rows get
+-- 'legacy' (unknown); new rows are written as 'user' (validated user
+-- messages) or 'server' (the server's own streamed reply). Assistant
+-- rows with origin 'legacy' are excluded from the model context by
+-- filterHistoryMessages (applied in loadHistory AND buildModelMessages).
+-- They stay in D1 and in /api/backup exports: nothing is deleted, and
+-- a future verified backfill could re-trust them if ever warranted.
+--
+-- DEPLOYMENT ORDER: apply this migration BEFORE deploying the rev6
+-- Worker code. The code selects and inserts origin; without the column,
+-- loadHistory fails into its catch (returns [], chat continues without
+-- memory) and saveConversation inserts fail into the waitUntil catch
+-- (chat still works, but nothing is saved). Check first whether the
+-- column already exists:
+--   SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages';
+-- This statement is NOT idempotent: re-running it fails with
+-- "duplicate column name". Do not re-run after it has been applied.
+--
+-- NOT yet applied to production D1 — apply via the D1 API, then verify:
+--   SELECT origin, COUNT(*) FROM messages GROUP BY origin;
+ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'legacy';

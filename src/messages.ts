@@ -51,19 +51,37 @@ export function validateIncomingMessages(input: unknown): ChatMessage[] {
 }
 
 /**
+ * Normalises a stored origin value to one of the three known
+ * provenances. Anything missing or unrecognised is "legacy" —
+ * unknown, and therefore untrusted for assistant history.
+ */
+export function normalizeOrigin(value: unknown): "server" | "user" | "legacy" {
+	if (value === "server" || value === "user") return value;
+	return "legacy";
+}
+
+/**
  * Filters stored history to the roles the server itself creates:
  * user and assistant only. A system or tool row in the messages
  * table — whether written by a caller before this fix, by a bug,
  * or by a compromised row — can never reach the model. Applied
  * independently in loadHistory AND in buildModelMessages, so a
  * missing filter in one place cannot open the hole.
+ *
+ * Provenance (P2-M1 rev6): an assistant row is trusted only when
+ * its origin is exactly "server" — a reply the server itself
+ * streamed back. A row of unknown provenance ("legacy", or no
+ * origin at all) may be a historically forged reply, so it is
+ * dropped from the model context. User rows are user input by
+ * definition, so any origin is accepted for them.
  */
 export function filterHistoryMessages(
 	messages: ChatMessage[],
 ): ChatMessage[] {
-	return messages.filter(
-		(m) =>
-			(m.role === "user" || m.role === "assistant") &&
-			typeof m.content === "string",
-	);
+	return messages.filter((m) => {
+		if (typeof m.content !== "string") return false;
+		if (m.role === "user") return true;
+		if (m.role === "assistant") return m.origin === "server";
+		return false;
+	});
 }

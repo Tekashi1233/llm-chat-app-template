@@ -30,6 +30,23 @@ export type ToolCall = {
 };
 
 export type ChatMessage =
-	| { role: "system" | "user"; content: string }
-	| { role: "assistant"; content: string; tool_calls?: ToolCall[] }
+	| { role: "system"; content: string }
+	| {
+			role: "user";
+			content: string;
+			/**
+			 * Provenance of a stored history row (P2-M1 rev6). Only
+			 * set on rows read back from D1: "server" = the server's
+			 * own streamed reply, "user" = a validated user message,
+			 * "legacy" = written before provenance existed (unknown).
+			 * Never sent to the model; buildModelMessages strips it.
+			 */
+			origin?: "server" | "user" | "legacy";
+	  }
+	| {
+			role: "assistant";
+			content: string;
+			tool_calls?: ToolCall[];
+			origin?: "server" | "user" | "legacy";
+	  }
 	| { role: "tool"; content: string; tool_call_id: string };

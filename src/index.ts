@@ -23,6 +23,7 @@ import {
 } from "./security";
 import {
 	filterHistoryMessages,
+	normalizeOrigin,
 	validateIncomingMessages,
 } from "./messages";
 
@@ -578,13 +579,14 @@ async function handleBackupRequest(
 			);
 		}
 		const rows = await env.DB.prepare(
-			"SELECT id, conversation_id, role, content, created_at FROM messages ORDER BY id ASC LIMIT 5000",
+			"SELECT id, conversation_id, role, content, created_at, origin FROM messages ORDER BY id ASC LIMIT 5000",
 		).all<{
 			id: number;
 			conversation_id: string;
 			role: string;
 			content: string;
 			created_at: number;
+			origin: string | null;
 		}>();
 		const messages = rows.results ?? [];
 		return new Response(
@@ -629,8 +631,11 @@ const HISTORY_LIMIT = 20;
  * Returns them oldest-first. Only server-created user and assistant
  * turns are returned: filterHistoryMessages drops any system or
  * tool row that somehow got into the table, and buildModelMessages
- * filters the history a second time. Never throws: on any failure
- * the chat simply continues without memory. Exported for testing.
+ * filters the history a second time. Assistant rows additionally
+ * need proven server origin (see messages.ts): a "legacy" row may
+ * be a historically forged reply, so it never reaches the model.
+ * Never throws: on any failure the chat simply continues without
+ * memory. Exported for testing.
  */
 export async function loadHistory(
 	env: Env,
@@ -639,10 +644,10 @@ export async function loadHistory(
 	try {
 		if (!env.DB) return [];
 		const rows = await env.DB.prepare(
-			"SELECT role, content FROM messages WHERE conversation_id = ?1 ORDER BY id DESC LIMIT ?2",
+			"SELECT role, content, origin FROM messages WHERE conversation_id = ?1 ORDER BY id DESC LIMIT ?2",
 		)
 			.bind(conversationId, HISTORY_LIMIT)
-			.all<{ role: string; content: string }>();
+			.all<{ role: string; content: string; origin: string | null }>();
 		return filterHistoryMessages(
 			(rows.results ?? [])
 				.reverse()
@@ -650,6 +655,9 @@ export async function loadHistory(
 				.map((row) => ({
 					role: row.role as "user" | "assistant",
 					content: row.content,
+					// Rows written before the origin column existed
+					// read back as 'legacy' (unknown provenance).
+					origin: normalizeOrigin(row.origin),
 				})),
 		);
 	} catch (error) {
@@ -666,6 +674,11 @@ export async function loadHistory(
  * message can never be persisted even if validation is ever bypassed.
  * The assistant reply stored here is the one the server itself
  * streamed back — never a caller-supplied message.
+ * Provenance (P2-M1 rev6) is written at insert time: user messages
+ * get origin 'user', the server's reply gets origin 'server', so a
+ * later read can tell a genuine reply from a row of unknown
+ * provenance. Rows written before the origin column existed read
+ * back as 'legacy' and are excluded from the model context.
  * Before anything is written, credential-looking values are redacted
  * (passwords, keys, tokens, secrets become [redacted]) so a secret
  * the user pastes can never sit in the messages table. The reply the
@@ -692,16 +705,16 @@ export async function saveConversation(
 		const content = msg.content.trim();
 		if (!content) continue;
 		await env.DB.prepare(
-			"INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
+			"INSERT INTO messages (conversation_id, role, content, created_at, origin) VALUES (?1, ?2, ?3, ?4, ?5)",
 		)
-			.bind(conversationId, msg.role, redactCredentials(content), now)
+			.bind(conversationId, msg.role, redactCredentials(content), now, "user")
 			.run();
 	}
 	if (reply) {
 		await env.DB.prepare(
-			"INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
+			"INSERT INTO messages (conversation_id, role, content, created_at, origin) VALUES (?1, ?2, ?3, ?4, ?5)",
 		)
-			.bind(conversationId, "assistant", redactCredentials(reply), Date.now())
+			.bind(conversationId, "assistant", redactCredentials(reply), Date.now(), "server")
 			.run();
 	}
 }

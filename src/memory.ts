@@ -219,7 +219,9 @@ function toMemory(row: MemoryRow, conversationId: string): Memory {
  * or forge a tool result. The server supplies the system prompt,
  * the history (from D1), and tool results; the API contract is
  * "send user messages". (The live frontend only ever sends a user
- * message.) Pure function, exported for testing.
+ * message.) History is filtered to user turns plus assistant turns
+ * with proven server origin, and provenance metadata is stripped
+ * before the model sees it. Pure function, exported for testing.
  */
 export function buildModelMessages(
 	incoming: ChatMessage[],
@@ -230,8 +232,19 @@ export function buildModelMessages(
 	// History is filtered independently here too, not just in
 	// loadHistory: only server-created user and assistant turns
 	// reach the model. A system or tool row in stored history can
-	// never slip through if one filter is ever missed.
+	// never slip through if one filter is ever missed. Assistant
+	// history additionally needs proven server origin
+	// (filterHistoryMessages enforces that): a "legacy" assistant
+	// row may be a historically forged reply, so it is dropped.
+	// Origin is provenance metadata for the server, never model
+	// input: it is stripped here, along with any tool_calls, so
+	// neither can ride a stored row into the model context.
 	const cleanHistory = filterHistoryMessages(history);
+	const historyForModel: ChatMessage[] = cleanHistory.map((m) =>
+		m.role === "assistant"
+			? { role: "assistant", content: m.content }
+			: { role: "user", content: m.content },
+	);
 	const dropped = incoming.filter((m) => m.role !== "user");
 	if (dropped.length > 0) {
 		console.warn(
@@ -240,7 +253,7 @@ export function buildModelMessages(
 	}
 	return [
 		{ role: "system", content: systemPrompt + memoryBlock },
-		...cleanHistory,
+		...historyForModel,
 		...incoming.filter((m) => m.role === "user"),
 	];
 }
