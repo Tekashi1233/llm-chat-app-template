@@ -378,12 +378,13 @@ async function handleChatRequest(
 		const memories = await loadMemories(env, conversation_id, latestUserText);
 		const memoryBlock = formatMemoriesForPrompt(memories);
 
-		// Build the messages the model sees: system prompt (with the
-		// memory block), remembered history, then the new message(s).
-		// buildModelMessages appends the memory block to a
-		// caller-supplied system message too, so it is never
-		// silently skipped. (The live frontend only ever sends a
-		// user message, but the API accepts any payload.)
+		// Build the messages the model sees: canonical system prompt
+		// (with the memory block), remembered history, then the new
+		// user message(s). buildModelMessages drops anything that
+		// is not a user message from the request — a caller cannot
+		// supply a system prompt, fake an assistant reply, or forge
+		// a tool result. (The live frontend only ever sends a user
+		// message.)
 		const modelMessages = buildModelMessages(
 			messages,
 			history,

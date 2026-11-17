@@ -27,6 +27,14 @@
  * empty result or an error string, and chat continues exactly as
  * it did before P2.
  *
+ * Replacement is atomic: the supersede and the insert run in one
+ * D1 batch (a single transaction). A partial unique index
+ * (idx_memories_active_topic) guarantees at most one active memory
+ * per conversation + kind + topic + project, so a concurrent
+ * replacement cannot leave two active rows. When a batch outcome
+ * is uncertain, the code re-reads the actual state and reports
+ * what is really there instead of guessing.
+ *
  * Credential guard — heuristic protection, not complete secret
  * detection. The guard matches common secret formats by pattern
  * (labelled secrets, known key prefixes, JWTs, private keys, long
@@ -190,16 +198,19 @@ function toMemory(row: MemoryRow, conversationId: string): Memory {
 }
 
 /**
- * Builds the message list the model sees: the system prompt (with
- * the memory block), the recent history, then the new message(s).
+ * Builds the message list the model sees: the canonical system
+ * prompt (with the memory block), the remembered history, then the
+ * new user message(s).
  *
- * The live frontend only ever sends a user message, so the usual
- * case is SYSTEM_PROMPT + memoryBlock. But the API accepts any
- * payload, and a caller CAN include its own system message — in
- * that case the memory block is appended to the caller's system
- * message instead of being silently skipped. A new object is
- * pushed; the caller's message is never mutated. Pure function,
- * exported for testing.
+ * Only user-role messages are ever taken from the caller. Anything
+ * else in the request — system, assistant, or tool messages — is
+ * untrusted input and is dropped, never merged: the canonical
+ * system prompt always wins, and no external caller can replace
+ * or override VESPER's core instructions, fake an assistant reply,
+ * or forge a tool result. The server supplies the system prompt,
+ * the history (from D1), and tool results; the API contract is
+ * "send user messages". (The live frontend only ever sends a user
+ * message.) Pure function, exported for testing.
  */
 export function buildModelMessages(
 	incoming: ChatMessage[],
@@ -207,20 +218,17 @@ export function buildModelMessages(
 	systemPrompt: string,
 	memoryBlock: string,
 ): ChatMessage[] {
-	const out: ChatMessage[] = [];
-	const systemMessages = incoming.filter((m) => m.role === "system");
-	if (systemMessages.length === 0) {
-		out.push({ role: "system", content: systemPrompt + memoryBlock });
-	} else {
-		out.push({
-			role: "system",
-			content: systemMessages[0].content + memoryBlock,
-		});
-		for (const extra of systemMessages.slice(1)) out.push(extra);
+	const dropped = incoming.filter((m) => m.role !== "user");
+	if (dropped.length > 0) {
+		console.warn(
+			`Dropped ${dropped.length} non-user message(s) from the request; canonical system prompt kept.`,
+		);
 	}
-	out.push(...history);
-	out.push(...incoming.filter((m) => m.role !== "system"));
-	return out;
+	return [
+		{ role: "system", content: systemPrompt + memoryBlock },
+		...history,
+		...incoming.filter((m) => m.role === "user"),
+	];
 }
 
 /**
@@ -395,50 +403,79 @@ export async function storeMemory(
 					note: "That was already remembered, so nothing changed.",
 				});
 			}
-			// A different fact for the same topic: the new one wins,
-			// the old one is kept as superseded history. The two
-			// writes are not a single D1 transaction, so they are
-			// made safe instead: if the supersede fails (or affects
-			// no row), the newly inserted row is deleted again, so
-			// two active conflicting memories can never be left
-			// behind. The old memory stays active in that case.
-			let newId = 0;
+			// A different fact for the same topic: replace it
+			// atomically. The supersede and the insert run in ONE
+			// D1 batch, which is a single transaction: if either
+			// statement fails, the whole batch rolls back — the old
+			// memory stays active and no new row exists. There is
+			// no hand-rolled rollback DELETE any more, so that
+			// failure mode is gone by construction.
+			//
+			// A partial unique index (idx_memories_active_topic)
+			// guarantees at most one active memory per conversation
+			// + kind + topic + project, so even a concurrent
+			// replacement cannot leave two active rows: the loser's
+			// INSERT violates the index and its batch rolls back.
+			//
+			// The superseded_by link is audit metadata, not part of
+			// the invariant: it is set after the batch, best-effort,
+			// and a failure there never affects the stored memory.
+			let batchResults: D1Result[] | null = null;
+			let batchError: unknown = null;
 			try {
-				const inserted = await env.DB.prepare(
-					"INSERT INTO memories (conversation_id, kind, topic, fact, project, source, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active')",
-				)
-					.bind(conversationId, kind, topic, fact, project, source, now, now)
-					.run();
-				newId = Number(inserted.meta?.last_row_id ?? 0);
-				if (!newId) throw new Error("insert did not return an id");
-				const updated = await env.DB.prepare(
-					"UPDATE memories SET status = 'superseded', superseded_by = ?1 WHERE id = ?2 AND status = 'active'",
-				)
-					.bind(newId, existing.id)
-					.run();
-				if (Number(updated.meta?.changes ?? 0) !== 1) {
-					throw new Error("supersede did not affect exactly one row");
-				}
+				batchResults = await env.DB.batch([
+					env.DB.prepare(
+						"UPDATE memories SET status = 'superseded' WHERE id = ?1 AND status = 'active'",
+					).bind(existing.id),
+					env.DB.prepare(
+						"INSERT INTO memories (conversation_id, kind, topic, fact, project, source, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active')",
+					)
+						.bind(conversationId, kind, topic, fact, project, source, now, now),
+				]);
 			} catch (error) {
-				if (newId) {
-					try {
-						await env.DB.prepare(
-							"DELETE FROM memories WHERE id = ?1",
-						)
-							.bind(newId)
-							.run();
-					} catch (rollbackError) {
-						console.error(
-							"Failed to roll back a half-stored memory:",
-							rollbackError,
-						);
-					}
+				batchError = error;
+			}
+			if (
+				batchError ||
+				!batchResults ||
+				Number(batchResults[0]?.meta?.changes ?? 0) !== 1
+			) {
+				// Uncertain outcome. The batch may have rolled back
+				// cleanly, or it may have committed and the error
+				// arrived afterwards. Never guess: re-read the actual
+				// state and report what is really there.
+				if (batchError) {
+					console.error("Memory replacement batch failed:", batchError);
+				} else {
+					console.error(
+						"Memory replacement batch did not supersede exactly one row.",
+					);
 				}
-				console.error("Failed to replace memory:", error);
-				return JSON.stringify({
-					error:
-						"Could not store that memory. The previous memory was left unchanged.",
-				});
+				return JSON.stringify(
+					await verifyReplacement(
+						env,
+						conversationId,
+						kind,
+						topic,
+						project,
+						fact,
+						existing.fact,
+					),
+				);
+			}
+			const newId = Number(batchResults[1]?.meta?.last_row_id ?? 0);
+			if (newId) {
+				try {
+					await env.DB.prepare(
+						"UPDATE memories SET superseded_by = ?1 WHERE id = ?2",
+					)
+						.bind(newId, existing.id)
+						.run();
+				} catch (linkError) {
+					// Audit link only: the replacement is stored and
+					// the old memory is superseded. Log and continue.
+					console.error("Failed to record superseded_by link:", linkError);
+				}
 			}
 			return JSON.stringify({
 				stored: true,
@@ -447,16 +484,136 @@ export async function storeMemory(
 				note: "This replaces what was remembered about that topic before.",
 			});
 		}
-		await env.DB.prepare(
-			"INSERT INTO memories (conversation_id, kind, topic, fact, project, source, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active')",
-		)
-			.bind(conversationId, kind, topic, fact, project, source, now, now)
-			.run();
+		try {
+			await env.DB.prepare(
+				"INSERT INTO memories (conversation_id, kind, topic, fact, project, source, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active')",
+			)
+				.bind(conversationId, kind, topic, fact, project, source, now, now)
+				.run();
+		} catch (insertError) {
+			// A concurrent insert for the same topic may have landed
+			// first (the unique index rejects the second). Re-read:
+			// if the same fact is now stored, say so; if a different
+			// fact is stored, report the failure honestly.
+			const actual = await readActiveMemories(
+				env,
+				conversationId,
+				kind,
+				topic,
+				project,
+			);
+			if (
+				actual &&
+				actual.some(
+					(row) => row.fact.trim().toLowerCase() === fact.toLowerCase(),
+				)
+			) {
+				return JSON.stringify({
+					stored: false,
+					already_remembered: true,
+					topic,
+					note: "That was already remembered, so nothing changed.",
+				});
+			}
+			console.error("Failed to store memory:", insertError);
+			return JSON.stringify({
+				error: "Could not store that memory. Please try again.",
+			});
+		}
 		return JSON.stringify({ stored: true, topic });
 	} catch (error) {
 		console.error("Failed to store memory:", error);
 		return JSON.stringify({ error: "Could not store that memory." });
 	}
+}
+
+/**
+ * Reads the active memories for one topic (same project-scoped
+ * match as the dedup lookup). Returns null when the read itself
+ * fails, so callers can distinguish "no rows" from "unknown".
+ */
+export async function readActiveMemories(
+	env: Env,
+	conversationId: string,
+	kind: string,
+	topic: string,
+	project: string | null,
+): Promise<Array<{ id: number; fact: string }> | null> {
+	try {
+		if (!env.DB) return null;
+		const rows = await env.DB.prepare(
+			"SELECT id, fact FROM memories WHERE conversation_id = ?1 AND status = 'active' AND kind = ?2 AND lower(topic) = lower(?3) AND ((?4 IS NULL AND project IS NULL) OR project = ?4) ORDER BY updated_at DESC",
+		)
+			.bind(conversationId, kind, topic, project)
+			.all<{ id: number; fact: string }>();
+		return rows.results ?? [];
+	} catch (error) {
+		console.error("Failed to re-read memories:", error);
+		return null;
+	}
+}
+
+/**
+ * Re-reads the active memories for a topic after an uncertain
+ * replacement and reports the actual state, so the model never
+ * claims a result the database does not support. Returns the
+ * object storeMemory hands back to the model.
+ */
+export async function verifyReplacement(
+	env: Env,
+	conversationId: string,
+	kind: string,
+	topic: string,
+	project: string | null,
+	fact: string,
+	previousFact: string,
+): Promise<Record<string, unknown>> {
+	const actual = await readActiveMemories(
+		env,
+		conversationId,
+		kind,
+		topic,
+		project,
+	);
+	if (actual === null) {
+		return {
+			error:
+				"Could not store that memory, and the result could not be verified. Please check what is remembered before relying on it.",
+		};
+	}
+	if (actual.length === 1 && actual[0].fact === fact) {
+		// The replacement did land; the error arrived after the commit.
+		return {
+			stored: true,
+			topic,
+			superseded_previous: true,
+			note: "This replaces what was remembered about that topic before.",
+		};
+	}
+	if (actual.length === 1 && actual[0].fact === previousFact) {
+		// The batch rolled back cleanly: the previous memory is unchanged.
+		return {
+			error: "Could not store that memory. The previous memory is unchanged.",
+		};
+	}
+	if (actual.length === 1) {
+		// A concurrent replacement won: its fact is the active one.
+		return {
+			error: `Could not store that memory. Another change to this topic happened at the same time, and the stored memory is now: ${actual[0].fact}`,
+		};
+	}
+	if (actual.length === 0) {
+		return {
+			error:
+				"Could not store that memory, and the previous memory is no longer active. Please tell me the fact again so I can store it.",
+		};
+	}
+	// Two or more active rows: the invariant broke. The partial
+	// unique index should make this impossible; report it plainly
+	// instead of claiming success.
+	return {
+		error: `Could not verify the replacement for "${topic}": ${actual.length} active memories exist for this topic. Please ask what is remembered and correct it.`,
+	};
 }
 
 /**
