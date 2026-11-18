@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using Athena.Core;
@@ -247,6 +248,17 @@ public partial class SettingsView : UserControl, IRefreshable
                 Margin = new Thickness(0, 2, 0, 0),
             };
             voiceBody.Children.Add(wakeCheckDisabled);
+            // N8: the greeting toggle is a preference like the wake
+            // word one — shown (disabled) even when listening is
+            // unavailable, so the saved choice stays visible.
+            var greetCheckDisabled = new CheckBox
+            {
+                Content = "Greet me when I wake you",
+                IsChecked = state.VoiceSettings.GreetOnWakeWord,
+                IsEnabled = false,
+                Margin = new Thickness(0, 2, 0, 0),
+            };
+            voiceBody.Children.Add(greetCheckDisabled);
             voiceBody.Children.Add(ViewHelpers.MutedText(
                 "Wake-word listening isn't available on this PC — no speech recognizer or microphone was found, " +
                 "so saying 'athena' can't bring the window back."));
@@ -269,13 +281,88 @@ public partial class SettingsView : UserControl, IRefreshable
                 _state.SaveVoiceSettings();
                 _state.NotifyWakeWordSettingChanged();
             }
+
+            // N8: greet on a wake-word pop-up. ON by default; off
+            // silences the greeting (the window still pops up).
+            // Spoken aloud even when "Read replies aloud" is off —
+            // it is a greeting, not a reply — or shown as text when
+            // speech isn't available.
+            var greetCheck = new CheckBox
+            {
+                Content = "Greet me when I wake you",
+                IsChecked = state.VoiceSettings.GreetOnWakeWord,
+                Margin = new Thickness(0, 2, 0, 0),
+            };
+            greetCheck.Checked += (_, _) => SetGreetOnWakeWord(true);
+            greetCheck.Unchecked += (_, _) => SetGreetOnWakeWord(false);
+            voiceBody.Children.Add(greetCheck);
+
+            void SetGreetOnWakeWord(bool on)
+            {
+                _state.VoiceSettings = _state.VoiceSettings with { GreetOnWakeWord = on };
+                _state.SaveVoiceSettings();
+            }
         }
+        // N8: privacy, stated plainly next to the wake-word toggle
+        // — not buried in a doc. Only wake-word detection runs in
+        // the background: no continuous recording, no stored
+        // conversations, no transmitted audio — local keyword
+        // spotting on this PC only.
+        voiceBody.Children.Add(ViewHelpers.BodyText(
+            "Privacy: only wake-word detection runs in the background. " +
+            "It does not continuously record, does not store conversations, " +
+            "and does not transmit audio — local keyword spotting on this PC only."));
         voiceBody.Children.Add(ViewHelpers.MutedText(
             "Say 'athena' and the ATHENA window pops back up — it never sends a message on its own. " +
+            "When the greeting is on, ATHENA says 'Welcome, boss.' as she wakes — spoken aloud even when " +
+            "read-aloud is off, or shown as text under the wordmark when speech isn't available. " +
+            "The greeting is never a chat message and is never saved. " +
             "Keyword spotting can miss the word and can false-trigger on similar sounds; it needs a working " +
             "microphone and the app running. All recognition is local and offline — no audio leaves this laptop — " +
             "and it does not work while the laptop is asleep or the app is fully quit."));
         ContentPanel.Children.Add(voiceCard);
+
+        // Startup (N8): start with Windows, hidden in the tray.
+        var startupCard = ViewHelpers.Card("Startup", out var startupBody);
+        var autostartCheck = new CheckBox
+        {
+            Content = "Start ATHENA when I log in",
+            IsChecked = state.AppSettings.AutostartEnabled,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        var autostartStatus = ViewHelpers.MutedText("");
+        autostartCheck.Checked += (_, _) => SetAutostartEnabled(true);
+        autostartCheck.Unchecked += (_, _) => SetAutostartEnabled(false);
+        startupBody.Children.Add(autostartCheck);
+        startupBody.Children.Add(ViewHelpers.MutedText(
+            "ATHENA starts hidden in the tray when you log in, listening for 'athena' when the wake word is on — " +
+            "no need to launch it yourself. Quitting from the tray menu only closes this session; " +
+            "ATHENA will still start at your next login. Turn this off to stop that."));
+        startupBody.Children.Add(autostartStatus);
+        ContentPanel.Children.Add(startupCard);
+
+        void SetAutostartEnabled(bool on)
+        {
+            _state.AppSettings = _state.AppSettings with { AutostartEnabled = on };
+            _state.SaveAppSettings();
+            autostartStatus.Text = "";
+            try
+            {
+                var store = new WindowsAutostartStore();
+                var exePath = Environment.ProcessPath
+                    ?? Process.GetCurrentProcess().MainModule?.FileName;
+                if (!string.IsNullOrWhiteSpace(exePath))
+                {
+                    if (on) AutostartPolicy.EnsureEnabled(store, exePath);
+                    else AutostartPolicy.EnsureDisabled(store);
+                }
+            }
+            catch (Exception ex)
+            {
+                autostartStatus.Text =
+                    "Couldn't update the Windows startup setting — it will try again next launch. " + ex.Message;
+            }
+        }
 
         // Device.
         var deviceCard = ViewHelpers.Card("Device", out var deviceBody);

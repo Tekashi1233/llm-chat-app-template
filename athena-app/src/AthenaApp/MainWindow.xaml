@@ -127,6 +127,12 @@
         <TextBlock x:Name="StatusText" Text="Starting…" FontSize="11"
                    Foreground="#8A8A85" HorizontalAlignment="Center"
                    Margin="0,10,0,0"/>
+        <!-- N8: the wake greeting as text, shown only when the
+             wake word fires and speech is unavailable — it is a
+             local line, never a chat message. Hidden otherwise. -->
+        <TextBlock x:Name="GreetingText" Text="Welcome, boss." FontSize="13"
+                   Foreground="#EDEDE8" HorizontalAlignment="Center"
+                   Margin="0,6,0,0" Visibility="Collapsed"/>
       </StackPanel>
 
       <!-- Minimal menu, top right. -->

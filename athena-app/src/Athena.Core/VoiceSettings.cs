@@ -12,6 +12,9 @@ namespace Athena.Core;
 /// (not a constructor parameter) so existing positional
 /// constructions — and old voice.json files without the field,
 /// which deserialize to the true default — keep working.
+/// GreetOnWakeWord (N8) follows the same pattern: ON by default,
+/// the greeting "Welcome, boss." is spoken when the wake word
+/// pops the window up, even when reply voice output is OFF.
 /// </summary>
 public sealed record VoiceSettings(
     bool OutputEnabled,
@@ -23,6 +26,9 @@ public sealed record VoiceSettings(
 {
     /// <summary>Wake-word listening (N7): on by default; an explicit false is persisted and respected.</summary>
     public bool WakeWordEnabled { get; init; } = true;
+
+    /// <summary>Wake greeting (N8): on by default; an explicit false is persisted and respected. Off silences the greeting — the window still pops up.</summary>
+    public bool GreetOnWakeWord { get; init; } = true;
 
     public static VoiceSettings Defaults =>
         new(OutputEnabled: false, VoiceName: null, Rate: 0,
