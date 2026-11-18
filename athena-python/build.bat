@@ -11,8 +11,13 @@ call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install pywin32 pyautogui
+REM --collect-all (not --hidden-import): vosk / edge_tts / sounddevice
+REM ship native libraries + data files the frozen exe needs.
+REM --hidden-import only pulls the top-level module and silently drops
+REM the rest — a build made that way has no voice at all (the mic then
+REM reports "the speech recognition engine could not start").
 pyinstaller --name Athena --onefile --windowed --paths src ^
-  --hidden-import edge_tts --hidden-import vosk ^
+  --collect-all vosk --collect-all edge_tts --collect-all sounddevice ^
   --collect-all PySide6 main.py
 echo.
 echo Built: dist\Athena.exe
