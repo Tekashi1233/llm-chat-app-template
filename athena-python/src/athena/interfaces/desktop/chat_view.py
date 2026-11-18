@@ -107,6 +107,56 @@ class _SendWorker(QObject):
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
+class _DictationWorker(QObject):
+    """Runs one dictation session in a thread; delivers recognition
+    events on the GUI thread. The session ends when the user taps
+    Stop (``dictation.stop()``), the audio stream ends, or an error
+    occurs — it never auto-sends anything."""
+
+    event_received = Signal(object)  # RecognitionEvent
+    error = Signal(str)  # honest error text for the feed
+    finished = Signal()
+
+    def __init__(self, dictation: Any) -> None:
+        super().__init__()
+        self._dictation = dictation
+
+    def run(self) -> None:
+        try:
+            saw_event = False
+            for event in self._dictation.transcribe():
+                saw_event = True
+                self.event_received.emit(event)
+        except Exception as exc:  # never crash the dictation thread
+            self.error.emit(f"{type(exc).__name__}: {exc}")
+        else:
+            if not saw_event:
+                last_error = getattr(self._dictation, "last_error", None)
+                if last_error:
+                    self.error.emit(str(last_error))
+        finally:
+            self.finished.emit()
+
+
+class _ModelDownloadWorker(QObject):
+    """Downloads the Vosk model in a thread (blocking network I/O
+    must never freeze the UI). Emits the downloaded model path, or
+    None when the download failed."""
+
+    finished = Signal(object)  # Path | None
+
+    def __init__(self, ensurer: Callable) -> None:
+        super().__init__()
+        self._ensurer = ensurer
+
+    def run(self) -> None:
+        try:
+            result = self._ensurer(download=True)
+        except Exception:
+            result = None
+        self.finished.emit(result)
+
+
 class ChatView(QWidget):
     """One conversation: feed + glass input bar. Kept alive for the
     whole session by MainWindow so chat state survives navigation."""
@@ -120,6 +170,11 @@ class ChatView(QWidget):
     #: Raised when a send starts / finishes, so the shell can drive
     #: presence (thinking/working/idle). Payload: (state, detail).
     presence_requested = Signal(str, str)
+    #: Raised when a dictation session starts / stops, so the shell
+    #: can pause the wake-word listener while dictating and resume
+    #: it after (same as C# N7).
+    dictation_started = Signal()
+    dictation_stopped = Signal()
 
     def __init__(
         self,
@@ -137,6 +192,18 @@ class ChatView(QWidget):
         self._worker: _SendWorker | None = None
         self._device_command = False
         self._voice_output_enabled = False
+        # Dictation (wired by the shell through set_dictation; None
+        # until then — the mic button stays disabled and honest).
+        self._dictation: Any | None = None
+        self._model_ensurer: Callable | None = None
+        self._dictating = False
+        self._downloading_model = False
+        self._recogniser_available = False
+        self._mic_enabled_setting = True
+        self._dictation_thread: QThread | None = None
+        self._dictation_worker: _DictationWorker | None = None
+        self._download_thread: QThread | None = None
+        self._download_worker: _ModelDownloadWorker | None = None
 
         self.setStyleSheet(f"background: {theme.BACKGROUND};")
 
@@ -230,6 +297,48 @@ class ChatView(QWidget):
     def set_tts(self, tts: Any | None) -> None:
         self._tts = tts
 
+    def set_feed_visible(self, visible: bool) -> None:
+        """Show/hide the message feed only — the glass input bar
+        stays visible either way, so there is always somewhere to
+        type, even on first launch with zero messages. (v1 hid the
+        whole ChatView at idle, which hid the only input box: the
+        first message could never be typed.)"""
+        self._scroller.setVisible(visible)
+
+    @property
+    def feed_visible(self) -> bool:
+        """True when the feed itself is shown (independent of
+        whether an ancestor window is hidden)."""
+        return not self._scroller.isHidden()
+
+    def set_dictation(self, dictation: Any | None, model_ensurer: Callable | None = None) -> None:
+        """Wire the dictation engine (``athena.voice.stt.VoskDictation``
+        or a compatible fake). ``model_ensurer`` downloads the Vosk
+        model on first use; when omitted the real
+        ``ensure_model`` is used lazily. The mic button enables
+        once an engine is wired — even when its model is still
+        missing, so tapping it can start the download. (A wired
+        engine IS the recogniser, so this also records that one
+        exists.)"""
+        self._dictation = dictation
+        self._recogniser_available = dictation is not None
+        if model_ensurer is not None:
+            self._model_ensurer = model_ensurer
+        self._refresh_mic_button()
+
+    def _refresh_mic_button(self) -> None:
+        """Mic enabled = a dictation engine is wired, the recogniser
+        is available, and the mic setting is on. Disabled while a
+        model download is running (one tap is enough)."""
+        if not hasattr(self, "mic_button"):
+            return
+        self.mic_button.setEnabled(
+            self._dictation is not None
+            and self._recogniser_available
+            and self._mic_enabled_setting
+            and not self._downloading_model
+        )
+
     def set_voice_output_enabled(self, enabled: bool) -> None:
         self._voice_output_enabled = enabled
         self.voice_toggle.setText("Voice: On" if enabled else "Voice: Off")
@@ -239,9 +348,14 @@ class ChatView(QWidget):
     ) -> None:
         """Enable/disable mic + voice-toggle from the live voice
         service. When voice is unavailable both stay disabled — the
-        app never pretends voice works."""
+        app never pretends voice works. The mic also stays disabled
+        until a dictation engine is wired (set_dictation); a wired
+        engine with a missing model still enables it, so tapping
+        the mic can start the one-time model download."""
+        self._recogniser_available = recogniser_available
+        self._mic_enabled_setting = mic_enabled
         self.voice_toggle.setEnabled(tts_available)
-        self.mic_button.setEnabled(recogniser_available and mic_enabled)
+        self._refresh_mic_button()
 
     def set_mic_text(self, text: str) -> None:
         """Fill the input from the microphone. The next send is
@@ -390,14 +504,152 @@ class ChatView(QWidget):
             self._mic_filled = False
 
     def _on_mic_clicked(self) -> None:
-        # Dictation is driven by the voice module (wired by the
-        # shell through set_mic_text); the button itself only
-        # reports the honest state when nothing is wired.
+        """Mic button: start dictation, or stop it while listening.
+        Recognised text fills the input for the user to check — it
+        is NEVER auto-sent. Taps while a model download runs are
+        ignored (one download is enough)."""
+        if self._downloading_model:
+            return
+        if self._dictating:
+            self._stop_dictation()
+            return
+        if self._dictation is None:
+            self.add_system_message(
+                "Microphone input isn't wired up yet — the voice module "
+                "has not provided a recogniser.",
+                is_error=True,
+            )
+            return
+        self._start_dictation()
+
+    def _start_dictation(self) -> None:
+        """Start a dictation session. When the model is missing the
+        one-time download runs first (in a thread — the UI never
+        freezes); when the engine itself is unavailable the failure
+        is reported honestly instead of pretending to listen."""
+        if self._dictation is None or self._dictating:
+            return
+        try:
+            available = bool(self._dictation.is_available)
+        except Exception:
+            available = False
+        if not available:
+            model_present = getattr(self._dictation, "model_present", True)
+            if not model_present:
+                self._start_model_download()
+                return
+            self.add_system_message(
+                "Microphone input isn't available on this PC — the "
+                "speech recognition engine could not start.",
+                is_error=True,
+            )
+            return
+        self._dictating = True
+        self.mic_button.setText("Stop")
+        self._listening_label.setText("Listening… speak now, or tap Stop.")
+        self._listening_label.show()
+        self.dictation_started.emit()
+        self._dictation_thread = QThread(self)
+        self._dictation_worker = _DictationWorker(self._dictation)
+        self._dictation_worker.moveToThread(self._dictation_thread)
+        self._dictation_thread.started.connect(self._dictation_worker.run)
+        self._dictation_worker.event_received.connect(self._on_dictation_event)
+        self._dictation_worker.error.connect(self._on_dictation_error)
+        self._dictation_worker.finished.connect(self._on_dictation_finished)
+        self._dictation_worker.finished.connect(self._dictation_thread.quit)
+        self._dictation_thread.finished.connect(self._dictation_thread.deleteLater)
+        self._dictation_thread.start()
+
+    def _stop_dictation(self) -> None:
+        """Stop dictation at the user's tap. The worker thread ends
+        by itself once the engine notices (≤ ~250 ms); the finished
+        handler only cleans up."""
+        if not self._dictating:
+            return
+        self._dictating = False
+        stop = getattr(self._dictation, "stop", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+        self.mic_button.setText("Mic")
+        self._listening_label.hide()
+        self.dictation_stopped.emit()
+
+    def _on_dictation_event(self, event: Any) -> None:
+        """One recognition event: fill the input with the latest
+        hypothesis (partial or final). Never sends."""
+        text = getattr(event, "text", "") or ""
+        if text:
+            self.set_mic_text(text)
+
+    def _on_dictation_error(self, error_text: str) -> None:
         self.add_system_message(
-            "Microphone input isn't wired up yet — the voice module "
-            "has not provided a recogniser.",
+            f"Couldn't hear you — {error_text}",
             is_error=True,
         )
+
+    def _on_dictation_finished(self) -> None:
+        """The session ended by itself (stream ended or error) — or
+        after a user Stop tap, in which case this only cleans up."""
+        self._dictation_thread = None
+        self._dictation_worker = None
+        if not self._dictating:
+            return
+        self._dictating = False
+        self.mic_button.setText("Mic")
+        self._listening_label.hide()
+        self.dictation_stopped.emit()
+
+    def _start_model_download(self) -> None:
+        """Download the Vosk model on first use (~40 MB, one-time),
+        in a thread. The UI stays responsive and shows the state;
+        success starts dictation, failure is reported honestly."""
+        if self._model_ensurer is None:
+            try:
+                from athena.voice.stt import ensure_model
+
+                self._model_ensurer = ensure_model
+            except Exception:
+                self.add_system_message(
+                    "Microphone input isn't available — the speech "
+                    "recognition model is missing and could not be "
+                    "downloaded.",
+                    is_error=True,
+                )
+                return
+        self._downloading_model = True
+        self._refresh_mic_button()
+        self._listening_label.setText(
+            "Downloading voice model… (~40 MB, one-time)"
+        )
+        self._listening_label.show()
+        self._download_thread = QThread(self)
+        self._download_worker = _ModelDownloadWorker(self._model_ensurer)
+        self._download_worker.moveToThread(self._download_thread)
+        self._download_thread.started.connect(self._download_worker.run)
+        self._download_worker.finished.connect(self._on_model_downloaded)
+        self._download_worker.finished.connect(self._download_thread.quit)
+        self._download_thread.finished.connect(self._download_thread.deleteLater)
+        self._download_thread.start()
+
+    def _on_model_downloaded(self, result: Any) -> None:
+        """Model download done: retry dictation on success, report
+        honestly on failure. Either way the mic button comes back."""
+        self._download_thread = None
+        self._download_worker = None
+        self._downloading_model = False
+        self._listening_label.hide()
+        self._refresh_mic_button()
+        if result:
+            self._start_dictation()
+        else:
+            self.add_system_message(
+                "Couldn't download the voice model — check your "
+                "connection and try the mic again.",
+                is_error=True,
+            )
 
     def _on_voice_toggle_clicked(self) -> None:
         if self._tts is None:

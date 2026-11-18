@@ -129,6 +129,7 @@ class MainWindow(QWidget):
         wake: Any | None = None,
         tools: Any | None = None,
         memory: Any | None = None,
+        dictation: Any | None = None,
         start_hidden: bool = False,
         settings_dir: str | Path | None = None,
         parent: QWidget | None = None,
@@ -139,6 +140,7 @@ class MainWindow(QWidget):
         self._wake = wake
         self._tools = tools
         self._memory = memory  # local lessons store; D1 (via worker) stays memory of record
+        self._dictation = dictation
         self._start_hidden = start_hidden
         self._dir = Path(settings_dir) if settings_dir is not None else APP_DATA_DIR
         self._really_quitting = False
@@ -229,14 +231,26 @@ class MainWindow(QWidget):
         self._menu_button.raise_()
 
         # --- Conversation: the single ChatView, kept alive --------------
+        # The ChatView is ALWAYS visible: its glass input bar is the
+        # only place to type, and hiding the whole view at idle hid
+        # the input with it (v1 bug — the first message could never
+        # be typed). Only the message FEED hides at idle; the input
+        # bar stays at the bottom. The root stretch for the ChatView
+        # is 0 at idle (bar height only) and 1 in conversation (the
+        # feed takes its share of the window).
         self.chat_view = ChatView(send_fn=resolve_send(worker), tts=tts)
+        self.chat_view.set_dictation(dictation)
         self.chat_view.messages_changed.connect(self._update_layout_from_messages)
         self.chat_view.reply_received.connect(self._reactor.flash)
         self.chat_view.presence_requested.connect(
             lambda state, detail: self.set_presence(state, "chat", detail)
         )
-        self.chat_view.hide()
+        self.chat_view.dictation_started.connect(self._pause_wake_for_dictation)
+        self.chat_view.dictation_stopped.connect(self._resume_wake_after_dictation)
         root.addWidget(self.chat_view, 1)
+        self._root_layout = root
+        self._chat_index = root.indexOf(self.chat_view)
+        self._apply_idle_geometry()
 
         # --- Overlay: menu + the six sections ---------------------------
         self._overlay = QWidget(self)
@@ -411,11 +425,26 @@ class MainWindow(QWidget):
         else:
             self._set_idle_layout()
 
+    def _apply_idle_geometry(self) -> None:
+        """Idle: feed hidden, input bar only. The ChatView takes
+        its minimum height (the bar) at the bottom of the window;
+        the wordmark zone keeps the rest."""
+        self.chat_view.set_feed_visible(False)
+        if getattr(self, "_root_layout", None) is not None:
+            self._root_layout.setStretch(self._chat_index, 0)
+
+    def _apply_conversation_geometry(self) -> None:
+        """Conversation: feed shown, ChatView shares the window
+        with the (now small) wordmark zone, as in v1."""
+        self.chat_view.set_feed_visible(True)
+        if getattr(self, "_root_layout", None) is not None:
+            self._root_layout.setStretch(self._chat_index, 1)
+
     def _set_idle_layout(self) -> None:
         if not self._conversing:
             return
         self._conversing = False
-        self.chat_view.hide()
+        self._apply_idle_geometry()
         self._reactor.set_size(260)
         self._wordmark.setFont(self._wordmark_font(theme.WORDMARK_IDLE_PT))
         self._wordmark.setToolTip("ATHENA")
@@ -429,7 +458,7 @@ class MainWindow(QWidget):
         self._wordmark.setFont(self._wordmark_font(theme.WORDMARK_CHAT_PT))
         self._wordmark.setToolTip("Click to return to the idle screen")
         self._wordmark.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.chat_view.show()
+        self._apply_conversation_geometry()
         self.chat_view.focus_input()
 
     def _return_to_idle(self) -> None:
@@ -645,6 +674,34 @@ class MainWindow(QWidget):
             except Exception:
                 pass
 
+    def _pause_wake_for_dictation(self) -> None:
+        """Dictation started: pause the wake-word listener so the
+        user's own dictation cannot re-trigger it (same as C# N7).
+        Pause is temporary and in-memory only — it never touches
+        the persisted listening setting."""
+        if self._wake is None:
+            return
+        pause = getattr(self._wake, "pause", None)
+        if callable(pause):
+            try:
+                pause()
+            except Exception:
+                pass
+
+    def _resume_wake_after_dictation(self) -> None:
+        """Dictation stopped: resume the listener, but only when
+        listening is still switched on (a tray/Settings off during
+        dictation stays off)."""
+        if self._wake is None:
+            return
+        resume = getattr(self._wake, "resume", None)
+        if callable(resume):
+            try:
+                resume()
+            except Exception:
+                pass
+        self._start_wake_word()
+
     def _on_wake_word_setting_changed(self, _on: bool) -> None:
         """The Settings toggle flipped — start or stop the listener
         live, no restart needed."""
@@ -704,9 +761,11 @@ class MainWindow(QWidget):
         self._apply_autostart_setting()
         # Voice controls reflect what is actually available.
         tts_available = self._tts is not None
-        recogniser_available = self._wake is not None and bool(
-            getattr(self._wake, "is_available", True)
-        )
+        # The mic button is the dictation button: its recogniser is
+        # the dictation engine, not the wake-word listener. A wired
+        # engine with a missing model still enables it — tapping
+        # the mic starts the one-time model download.
+        recogniser_available = self._dictation is not None
         self.chat_view.refresh_voice_controls(
             tts_available=tts_available,
             recogniser_available=recogniser_available,
@@ -745,6 +804,7 @@ def build_app(
     wake: Any | None = None,
     tools: Any | None = None,
     memory: Any | None = None,
+    dictation: Any | None = None,
     start_hidden: bool = False,
     argv: list[str] | None = None,
     settings_dir: str | Path | None = None,
@@ -764,6 +824,8 @@ def build_app(
             the Tools panel falls back to the static catalogue.
         memory: local lessons store (kept for later use; D1 via the
             worker stays the memory of record).
+        dictation: dictation engine (``athena.voice.stt.VoskDictation``)
+            or None — the mic button stays disabled without one.
         start_hidden: ``--tray`` launch — start hidden in the tray.
             When False, ``argv`` is scanned for ``--tray``.
         argv: command-line args to scan for ``--tray`` (defaults to
@@ -786,6 +848,7 @@ def build_app(
         wake=wake,
         tools=tools,
         memory=memory,
+        dictation=dictation,
         start_hidden=start_hidden,
         settings_dir=settings_dir,
     )
