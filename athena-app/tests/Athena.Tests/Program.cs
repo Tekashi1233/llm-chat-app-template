@@ -413,6 +413,94 @@ Check("wakeword settings: on survives Save/Load",
     VoiceSettingsStore.Load(tmpWakeDir)?.WakeWordEnabled == true);
 Directory.Delete(tmpWakeDir, recursive: true);
 
+// ---------- N8: Wake greeting ----------
+// Policy: only a wake-word pop-up greets, and only when the
+// greeting is on. The text is exact.
+Check("greeting: exact text",
+    GreetingPolicy.GreetingText == "Welcome, boss.");
+Check("greeting: wake word + on greets",
+    GreetingPolicy.ShouldGreet(WindowShowReason.WakeWord, true));
+Check("greeting: wake word + off does not greet",
+    !GreetingPolicy.ShouldGreet(WindowShowReason.WakeWord, false));
+Check("greeting: tray restore never greets",
+    !GreetingPolicy.ShouldGreet(WindowShowReason.TrayRestore, true));
+Check("greeting: launch never greets",
+    !GreetingPolicy.ShouldGreet(WindowShowReason.Launch, true));
+
+// Settings: on by default, old file without the field -> true,
+// explicit off round-trips and is preserved by Clamped.
+Check("greeting settings: defaults are on",
+    VoiceSettings.Defaults is { GreetOnWakeWord: true });
+var greetOffSettings = VoiceSettings.Defaults with { GreetOnWakeWord = false };
+Check("greeting settings: Clamped preserves explicit off",
+    greetOffSettings.Clamped().GreetOnWakeWord == false);
+Check("greeting settings: Clamped preserves on",
+    VoiceSettings.Defaults.Clamped().GreetOnWakeWord == true);
+var tmpGreetDir = Path.Combine(
+    Path.GetTempPath(), "athena-greet-test-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(tmpGreetDir);
+File.WriteAllText(Path.Combine(tmpGreetDir, "voice.json"),
+    "{\"OutputEnabled\":false,\"VoiceName\":null,\"Rate\":0,\"Volume\":100," +
+    "\"MicEnabled\":true,\"RecognitionCulture\":\"en-GB\"}");
+Check("greeting settings: old voice.json without the field loads as on",
+    VoiceSettingsStore.Load(tmpGreetDir)?.GreetOnWakeWord == true);
+VoiceSettingsStore.Save(tmpGreetDir, greetOffSettings);
+var loadedGreetOff = VoiceSettingsStore.Load(tmpGreetDir);
+Check("greeting settings: explicit off survives Save/Load",
+    loadedGreetOff is not null && loadedGreetOff.GreetOnWakeWord == false);
+Check("greeting settings: off is written to the file",
+    File.ReadAllText(Path.Combine(tmpGreetDir, "voice.json"))
+        .Contains("\"GreetOnWakeWord\":false"));
+VoiceSettingsStore.Save(tmpGreetDir, VoiceSettings.Defaults);
+Check("greeting settings: on survives Save/Load",
+    VoiceSettingsStore.Load(tmpGreetDir)?.GreetOnWakeWord == true);
+Directory.Delete(tmpGreetDir, recursive: true);
+
+// ---------- N8: Tray listening controls ----------
+// Pause vs disable are different kinds of "off": disabling is the
+// persisted switch (same value the Settings toggle writes), pausing
+// is temporary and in-memory only.
+var listening = new ListeningControl();
+Check("listening: fresh control is enabled, unpaused, listening",
+    listening is { Enabled: true, Paused: false, IsListening: true });
+listening.Pause();
+Check("listening: pause stops listening without disabling",
+    listening is { Enabled: true, Paused: true, IsListening: false });
+listening.Resume();
+Check("listening: resume restores listening, setting untouched",
+    listening is { Enabled: true, Paused: false, IsListening: true });
+listening.TogglePause();
+Check("listening: toggle pauses",
+    listening is { Paused: true, IsListening: false });
+listening.TogglePause();
+Check("listening: toggle again resumes",
+    listening is { Paused: false, IsListening: true });
+listening.SetEnabled(false);
+Check("listening: disable stops listening",
+    listening is { Enabled: false, IsListening: false });
+listening.TogglePause();
+Check("listening: pause is a no-op while disabled",
+    listening is { Enabled: false, Paused: false, IsListening: false });
+listening.Pause();
+Check("listening: Pause() is a no-op while disabled",
+    listening is { Paused: false });
+listening.SetEnabled(true);
+Check("listening: re-enable restores listening",
+    listening is { Enabled: true, IsListening: true });
+listening.Pause();
+listening.SetEnabled(true);
+Check("listening: switching back on clears a manual pause",
+    listening is { Paused: false, IsListening: true });
+listening.Pause();
+listening.SetEnabled(false);
+Check("listening: disabling while paused keeps it stopped",
+    listening is { Enabled: false, Paused: true, IsListening: false });
+listening.SetEnabled(true);
+Check("listening: re-enabling after a paused disable clears the pause",
+    listening is { Paused: false, IsListening: true });
+Check("listening: a fresh control starts unpaused (pause never persists)",
+    new ListeningControl() is { Paused: false, IsListening: true });
+
 // ---------- N4: Voice-source Presence transitions ----------
 var voiceMachine = new PresenceStateMachine();
 Check("voice presence: Voice can set Listening",
@@ -1121,6 +1209,60 @@ else
     Check("voice: MainWindow disposes voice on close",
         mainCs.Contains("Voice?.Dispose()"));
 
+    // N8 wake greeting + tray listening controls (structural:
+    // SAPI itself needs Windows).
+    var greetPolicyCs = File.ReadAllText(Path.Combine(appDir, "..", "Athena.Core", "GreetingPolicy.cs"));
+    Check("greeting: policy owns the exact greeting text",
+        greetPolicyCs.Contains("Welcome, boss."));
+    Check("greeting: MainWindow greets through the policy",
+        mainCs.Contains("GreetingPolicy.ShouldGreet"));
+    Check("greeting: greeting is spoken through the existing voice service",
+        mainCs.Contains("Voice.Speak(GreetingPolicy.GreetingText)"));
+    Check("greeting: greeting never reaches the chat view or the model",
+        !chatViewCs.Contains("GreetingPolicy") && !chatViewCs.Contains("Welcome, boss"));
+    Check("greeting: tray restore uses its own show path, not the wake-word one",
+        mainCs.Contains("ShowWindowFromTray()")
+        && mainCs.Contains("showItem.Click += (_, _) => ShowWindowFromTray();")
+        && mainCs.Contains("_trayIcon.DoubleClick += (_, _) => ShowWindowFromTray();"));
+    Check("greeting: the wake-word path is the only caller of the greeting",
+        mainCs.Split("ShowWindowForWakeWord()").Length - 1 == 1);
+    Check("greeting: fallback text line exists under the wordmark",
+        shell.Contains("x:Name=\"GreetingText\""));
+    Check("greeting: Settings offers the toggle",
+        settingsCs.Contains("Greet me when I wake you") && settingsCs.Contains("GreetOnWakeWord"));
+    Check("greeting: Settings persists the toggle",
+        settingsCs.Contains("GreetOnWakeWord = on") && settingsCs.Contains("SaveVoiceSettings()"));
+    Check("listening: tray menu has a listening toggle",
+        mainCs.Contains("\"Listening: On\"") && mainCs.Contains("\"Listening: Off\""));
+    Check("listening: tray menu has pause/resume",
+        mainCs.Contains("\"Pause listening\"") && mainCs.Contains("\"Resume listening\""));
+    Check("listening: tray menu labels refresh on open",
+        mainCs.Contains("menu.Opening += (_, _) => RefreshTrayMenuLabels();"));
+    Check("listening: tray toggle writes the same persisted setting as Settings",
+        mainCs.Contains("WakeWordEnabled = on") && mainCs.Contains("SaveVoiceSettings()")
+        && mainCs.Contains("NotifyWakeWordSettingChanged()"));
+    Check("listening: tray and Settings sync through one control",
+        mainCs.Contains("_listening.SetEnabled(_state.VoiceSettings.WakeWordEnabled)"));
+    // The pause handler must never persist: slice its body and
+    // prove no save and no setting write happens in it.
+    var pauseStart = mainCs.IndexOf("private void TogglePauseFromTray", StringComparison.Ordinal);
+    var pauseBody = pauseStart >= 0
+        ? mainCs[pauseStart..mainCs.IndexOf("\n    /// <summary>N8: tray labels", pauseStart, StringComparison.Ordinal)]
+        : "";
+    Check("listening: pause never persists (no save, no setting write in the pause handler)",
+        pauseBody.Contains("TogglePause()") && !pauseBody.Contains("SaveVoiceSettings")
+        && !pauseBody.Contains("WakeWordEnabled"));
+    Check("listening: pause blocks the dictation resume path",
+        mainCs.Contains("if (!_listening.IsListening) return;"));
+    Check("listening: tray balloon only promises listening when it is on",
+        mainCs.Contains("ATHENA is in the tray — open it from the tray menu"));
+    Check("privacy: Settings states plainly what background listening does and does not do",
+        settingsCs.Contains("only wake-word detection runs in the background")
+        && settingsCs.Contains("does not continuously record")
+        && settingsCs.Contains("does not store conversations")
+        && settingsCs.Contains("does not transmit audio")
+        && settingsCs.Contains("local keyword spotting on this PC only"));
+
     // N5 M3: honest offline/error states (structural: the views
     // themselves need Windows).
     var chatClientCs = File.ReadAllText(Path.Combine(appDir, "..", "Athena.Core", "ChatClient.cs"));
@@ -1422,8 +1564,12 @@ else
         n8MainCs.Contains("AppSettingsStore.Load(AppDataDir)"));
     Check("n8: --tray launch with no sign-in shows the window to sign in",
         n8MainCs.Contains("if (_startHidden)") && n8MainCs.Contains("ShowWindowForWakeWord()"));
+    // N8 merge: the wake-word start is gated through ListeningControl,
+    // which is synced from the persisted setting before the listener
+    // is created — so a --tray launch still never force-starts it.
     Check("n8: wake-word start is still gated on the persisted setting (no force-start on --tray)",
-        n8MainCs.Contains("if (_state.VoiceSettings.WakeWordEnabled)")
+        n8MainCs.Contains("_listening.SetEnabled(_state.VoiceSettings.WakeWordEnabled)")
+        && n8MainCs.Contains("if (_listening.IsListening)")
         && n8MainCs.Contains("wake.Start();"));
     Check("n8: no recording/storage/transmission in the autostart code",
         !File.ReadAllText(Path.Combine(appDir, "..", "Athena.Core", "Autostart.cs"))

@@ -44,6 +44,8 @@ public partial class MainWindow : Window
 
     // ----- N7 tray + wake word -----
     private WinForms.NotifyIcon? _trayIcon;
+    private WinForms.ToolStripMenuItem? _trayListeningItem;
+    private WinForms.ToolStripMenuItem? _trayPauseItem;
     private bool _reallyQuitting;
     private bool _trayBalloonShown;
     private bool _wakeWordPausedForDictation;
@@ -51,6 +53,18 @@ public partial class MainWindow : Window
     // ----- N8 autostart / --tray -----
     private readonly bool _startHidden;
     private bool _initialised;
+
+    // ----- N8 wake greeting -----
+    // Hides the text fallback a few seconds after it shows.
+    private DispatcherTimer? _greetingTimer;
+
+    // ----- N8 tray listening controls -----
+    // The persisted on/off switch (VoiceSettings.WakeWordEnabled)
+    // and the temporary in-memory pause, in one place: the tray
+    // menu and the Settings toggle are two handles on the same
+    // setting and can never disagree. A fresh launch starts
+    // unpaused (Paused is never persisted).
+    private readonly ListeningControl _listening = new();
 
     /// <summary>Same folder as the DPAPI config (%APPDATA%\Athena); voice.json lives here too.</summary>
     private static string AppDataDir => Path.Combine(
@@ -216,9 +230,10 @@ public partial class MainWindow : Window
         {
             // N8: a --tray launch with no sign-in cannot stay hidden
             // — the setup dialog would pop up over nothing. Show the
-            // window so the user can sign in, then carry on.
+            // window so the user can sign in, then carry on. Launch
+            // reason, not WakeWord: no greeting at login.
             if (_startHidden)
-                ShowWindowForWakeWord();
+                ShowWindow(WindowShowReason.Launch);
             SetStatus("Not signed in", Colors.Gray);
             _chatView.AddSystemMessage(
                 "Welcome to ATHENA. To start chatting, sign in with your " +
@@ -259,6 +274,9 @@ public partial class MainWindow : Window
         _state.VoiceSettings =
             VoiceSettingsStore.Load(AppDataDir)?.Clamped()
             ?? VoiceSettings.Defaults;
+        // N8: sync the listening control with the persisted switch
+        // before anything decides whether to start the listener.
+        _listening.SetEnabled(_state.VoiceSettings.WakeWordEnabled);
         try
         {
             var voice = new VoiceService();
@@ -311,7 +329,7 @@ public partial class MainWindow : Window
             var wake = new WakeWordService();
             wake.WakeWordHeard += ShowWindowForWakeWord;
             _state.WakeWord = wake;
-            if (_state.VoiceSettings.WakeWordEnabled)
+            if (_listening.IsListening)
                 wake.Start();
         }
         catch (Exception)
@@ -321,10 +339,15 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>N7: the Settings toggle flipped — start or stop the listener live, no restart needed.</summary>
+    /// <summary>
+    /// N7: the Settings toggle flipped — start or stop the listener live, no restart needed.
+    /// N8: the toggle writes the same persisted setting the tray menu flips, so this is also
+    /// the tray sync point: the control is re-synced here first, then the listener follows it.
+    /// </summary>
     private void OnWakeWordSettingChanged()
     {
-        if (_state.VoiceSettings.WakeWordEnabled)
+        _listening.SetEnabled(_state.VoiceSettings.WakeWordEnabled);
+        if (_listening.IsListening)
         {
             CreateWakeWordService();
             TryStartWakeWordWithRetry();
@@ -333,21 +356,63 @@ public partial class MainWindow : Window
         {
             _state.WakeWord?.Stop();
         }
+        RefreshTrayMenuLabels();
     }
 
     /// <summary>N7: start the listener; one retry a second later if the mic is still busy winding down from dictation.</summary>
     private void TryStartWakeWordWithRetry()
     {
-        if (!_state.VoiceSettings.WakeWordEnabled) return;
+        if (!_listening.IsListening) return;
         if (_state.WakeWord?.Start() != false) return;
         var retry = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         retry.Tick += (_, _) =>
         {
             retry.Stop();
-            if (_state.VoiceSettings.WakeWordEnabled)
+            if (_listening.IsListening)
                 _state.WakeWord?.Start();
         };
         retry.Start();
+    }
+
+    // ----- N8: tray listening controls -----
+    // The tray menu is the same switch as Settings, not a second
+    // one: disabling from the tray writes VoiceSettings
+    // .WakeWordEnabled (persisted, voice.json) and notifies, so the
+    // Settings toggle shows the same value. Pausing is temporary
+    // and in-memory only — it stops the listener without touching
+    // the persisted setting, and a fresh launch starts unpaused.
+
+    /// <summary>N8: tray "Listening: On/Off" — flips the persisted switch (same setting as Settings).</summary>
+    private void ToggleListeningFromTray()
+    {
+        var on = !_listening.Enabled;
+        _state.VoiceSettings = _state.VoiceSettings with { WakeWordEnabled = on };
+        _state.SaveVoiceSettings();
+        _state.NotifyWakeWordSettingChanged();
+        RefreshTrayMenuLabels();
+    }
+
+    /// <summary>N8: tray "Pause/Resume listening" — temporary pause only; never persists, never touches the setting.</summary>
+    private void TogglePauseFromTray()
+    {
+        _listening.TogglePause();
+        if (_listening.IsListening)
+            TryStartWakeWordWithRetry();
+        else
+            _state.WakeWord?.Stop();
+        RefreshTrayMenuLabels();
+    }
+
+    /// <summary>N8: tray labels always reflect the current state — listening on / paused / disabled.</summary>
+    private void RefreshTrayMenuLabels()
+    {
+        if (_trayListeningItem is null || _trayPauseItem is null) return;
+        var enabled = _listening.Enabled;
+        _trayListeningItem.Text = enabled ? "Listening: On" : "Listening: Off";
+        _trayListeningItem.Checked = enabled;
+        _trayPauseItem.Enabled = enabled;
+        _trayPauseItem.Text = _listening.Paused ? "Resume listening" : "Pause listening";
+        _trayPauseItem.Checked = _listening.Paused;
     }
 
     private void PauseWakeWordForDictation()
@@ -363,6 +428,9 @@ public partial class MainWindow : Window
     {
         if (!_wakeWordPausedForDictation) return;
         _wakeWordPausedForDictation = false;
+        // N8: a manual tray pause still holds — dictation ending
+        // must not restart a listener the user paused on purpose.
+        if (!_listening.IsListening) return;
         TryStartWakeWordWithRetry();
     }
 
@@ -371,8 +439,17 @@ public partial class MainWindow : Window
     /// anything. If the presence machine refuses Listening (e.g. a
     /// chat is Thinking — only Chat may clear that), the window
     /// still shows and takes focus; the state just stays as it was.
+    /// N8: this is also the only path that greets — "Welcome,
+    /// boss.", spoken aloud (see GreetIfEnabled). The tray restore
+    /// path (ShowWindowFromTray) shares the show mechanics but
+    /// never greets, and neither does a normal launch.
     /// </summary>
-    private void ShowWindowForWakeWord()
+    private void ShowWindowForWakeWord() => ShowWindow(WindowShowReason.WakeWord);
+
+    /// <summary>N8: tray restore — same show mechanics as the wake word, but no greeting and no Listening presence.</summary>
+    private void ShowWindowFromTray() => ShowWindow(WindowShowReason.TrayRestore);
+
+    private void ShowWindow(WindowShowReason reason)
     {
         if (!IsVisible)
             Show();
@@ -383,8 +460,53 @@ public partial class MainWindow : Window
         // another app has focus, then hands topmost back.
         Topmost = true;
         Topmost = false;
-        _state.SetPresenceState(PresenceState.Listening, PresenceSource.Voice, "Listening…");
+        if (reason == WindowShowReason.WakeWord)
+        {
+            _state.SetPresenceState(PresenceState.Listening, PresenceSource.Voice, "Listening…");
+            GreetIfEnabled(reason);
+        }
         _chatView.FocusInput();
+    }
+
+    /// <summary>
+    /// N8: greet on a wake-word pop-up only — the policy refuses
+    /// every other reason, so this is safe to call from any show
+    /// path, but only the wake-word path calls it. The greeting is
+    /// spoken through the existing VoiceService even when reply
+    /// voice output is OFF: it is a greeting, not a reply (ChatView
+    /// gates replies on OutputEnabled; Voice.Speak itself does not
+    /// check it — same as the "Test voice" button). When speech is
+    /// unavailable the greeting shows as text under the wordmark
+    /// instead, and never crashes. It is local-only: no chat
+    /// message is added, nothing is sent to the model, and nothing
+    /// is stored — so it never reaches D1 or the memories. The
+    /// wake word's 3-second cooldown already prevents greeting
+    /// spam. Note Speak cancels any speech in progress, so a
+    /// greeting interrupts a reply being read aloud.
+    /// </summary>
+    private void GreetIfEnabled(WindowShowReason reason)
+    {
+        if (!GreetingPolicy.ShouldGreet(reason, _state.VoiceSettings.GreetOnWakeWord))
+            return;
+        var spoken = _state.Voice is { IsAvailable: true }
+            && _state.Voice.Speak(GreetingPolicy.GreetingText);
+        if (!spoken)
+            ShowGreetingText();
+    }
+
+    /// <summary>N8: text fallback for the greeting — shows under the wordmark for 5 seconds, then hides itself.</summary>
+    private void ShowGreetingText()
+    {
+        GreetingText.Text = GreetingPolicy.GreetingText;
+        GreetingText.Visibility = Visibility.Visible;
+        _greetingTimer?.Stop();
+        _greetingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _greetingTimer.Tick += (_, _) =>
+        {
+            _greetingTimer?.Stop();
+            GreetingText.Visibility = Visibility.Collapsed;
+        };
+        _greetingTimer.Start();
     }
 
     // ----- Tray-resident window (N7) -----
@@ -414,11 +536,23 @@ public partial class MainWindow : Window
             if (icon is null) return;
             var menu = new WinForms.ContextMenuStrip();
             var showItem = new WinForms.ToolStripMenuItem("Show ATHENA");
-            showItem.Click += (_, _) => ShowWindowForWakeWord();
+            showItem.Click += (_, _) => ShowWindowFromTray();
+            menu.Items.Add(showItem);
+            menu.Items.Add(new WinForms.ToolStripSeparator());
+            // N8: listening controls — same persisted switch as the
+            // Settings toggle, plus a temporary pause. Labels are
+            // refreshed on every open (see RefreshTrayMenuLabels).
+            _trayListeningItem = new WinForms.ToolStripMenuItem("Listening: On");
+            _trayListeningItem.Click += (_, _) => ToggleListeningFromTray();
+            menu.Items.Add(_trayListeningItem);
+            _trayPauseItem = new WinForms.ToolStripMenuItem("Pause listening");
+            _trayPauseItem.Click += (_, _) => TogglePauseFromTray();
+            menu.Items.Add(_trayPauseItem);
+            menu.Items.Add(new WinForms.ToolStripSeparator());
             var quitItem = new WinForms.ToolStripMenuItem("Quit");
             quitItem.Click += (_, _) => QuitFromTray();
-            menu.Items.Add(showItem);
             menu.Items.Add(quitItem);
+            menu.Opening += (_, _) => RefreshTrayMenuLabels();
             _trayIcon = new WinForms.NotifyIcon
             {
                 Icon = icon,
@@ -426,7 +560,7 @@ public partial class MainWindow : Window
                 Visible = true,
                 ContextMenuStrip = menu,
             };
-            _trayIcon.DoubleClick += (_, _) => ShowWindowForWakeWord();
+            _trayIcon.DoubleClick += (_, _) => ShowWindowFromTray();
         }
         catch (Exception)
         {
@@ -462,8 +596,11 @@ public partial class MainWindow : Window
                     _trayBalloonShown = true;
                     try
                     {
+                        // N8: only promise listening when it is actually on.
                         _trayIcon.ShowBalloonTip(3000, "ATHENA",
-                            "ATHENA is still listening in the tray — say 'athena' to bring it back",
+                            _listening.Enabled
+                                ? "ATHENA is still listening in the tray — say 'athena' to bring it back"
+                                : "ATHENA is in the tray — open it from the tray menu",
                             WinForms.ToolTipIcon.Info);
                     }
                     catch (Exception) { }
