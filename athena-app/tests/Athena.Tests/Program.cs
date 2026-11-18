@@ -335,6 +335,84 @@ Check("voice settings: corrupt file returns null",
     VoiceSettingsStore.Load(tmpVoiceDir) is null);
 Directory.Delete(tmpVoiceDir, recursive: true);
 
+// ---------- N7: WakeWord ----------
+// Policy: exact single word, confidence gate, cooldown.
+var ww0 = DateTimeOffset.UtcNow;
+var ww = new WakeWordTrigger();
+Check("wakeword: exact word triggers",
+    ww.TryTrigger("athena", 0.9, ww0));
+Check("wakeword: case-insensitive",
+    new WakeWordTrigger().TryTrigger("ATHENA", 0.9, ww0));
+Check("wakeword: trailing punctuation passes",
+    new WakeWordTrigger().TryTrigger("Athena!", 0.9, ww0));
+Check("wakeword: surrounding whitespace and punctuation pass",
+    new WakeWordTrigger().TryTrigger("  athena...  ", 0.9, ww0));
+Check("wakeword: multi-word fails",
+    !new WakeWordTrigger().TryTrigger("athena please", 0.9, ww0)
+    && !new WakeWordTrigger().TryTrigger("hey athena", 0.9, ww0));
+Check("wakeword: empty/null/whitespace fail",
+    !new WakeWordTrigger().TryTrigger("", 0.9, ww0)
+    && !new WakeWordTrigger().TryTrigger(null, 0.9, ww0)
+    && !new WakeWordTrigger().TryTrigger("   ", 0.9, ww0));
+Check("wakeword: punctuation-only fails",
+    !new WakeWordTrigger().TryTrigger("!!!", 0.9, ww0));
+Eq("wakeword: confidence boundary is MinConfidence",
+    WakeWordTrigger.MinConfidence, 0.7);
+Check("wakeword: confidence exactly at threshold triggers",
+    new WakeWordTrigger().TryTrigger("athena", WakeWordTrigger.MinConfidence, ww0));
+Check("wakeword: confidence just below threshold fails",
+    !new WakeWordTrigger().TryTrigger("athena", 0.69, ww0));
+Check("wakeword: zero and NaN confidence fail",
+    !new WakeWordTrigger().TryTrigger("athena", 0.0, ww0)
+    && !new WakeWordTrigger().TryTrigger("athena", double.NaN, ww0));
+
+// Cooldown: repeat within 3s ignored, exactly 3s accepted,
+// and a rejected attempt does not reset the cooldown.
+var wwCool = new WakeWordTrigger();
+Check("wakeword: first trigger accepted",
+    wwCool.TryTrigger("athena", 0.9, ww0));
+Check("wakeword: repeat after 1s ignored",
+    !wwCool.TryTrigger("athena", 0.9, ww0.AddSeconds(1)));
+Check("wakeword: rejected attempt does not reset cooldown",
+    !wwCool.TryTrigger("athena", 0.1, ww0.AddSeconds(2))
+    && !wwCool.TryTrigger("athena", 0.9, ww0.AddSeconds(2)));
+Check("wakeword: repeat at exactly 3s accepted",
+    wwCool.TryTrigger("athena", 0.9, ww0.AddSeconds(3)));
+Eq("wakeword: cooldown is 3 seconds",
+    WakeWordTrigger.CooldownSeconds, 3);
+var wwFailed = new WakeWordTrigger();
+Check("wakeword: failed attempt sets no LastAcceptedAt",
+    !wwFailed.TryTrigger("hello", 0.9, ww0) && wwFailed.LastAcceptedAt is null);
+
+// Settings: on by default, old file without the field -> true,
+// explicit off round-trips and is preserved by Clamped.
+Check("wakeword settings: defaults are on",
+    VoiceSettings.Defaults is { WakeWordEnabled: true });
+var offSettings = VoiceSettings.Defaults with { WakeWordEnabled = false };
+Check("wakeword settings: Clamped preserves explicit off",
+    offSettings.Clamped().WakeWordEnabled == false);
+Check("wakeword settings: Clamped preserves on",
+    VoiceSettings.Defaults.Clamped().WakeWordEnabled == true);
+var tmpWakeDir = Path.Combine(
+    Path.GetTempPath(), "athena-wakeword-test-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(tmpWakeDir);
+File.WriteAllText(Path.Combine(tmpWakeDir, "voice.json"),
+    "{\"OutputEnabled\":false,\"VoiceName\":null,\"Rate\":0,\"Volume\":100," +
+    "\"MicEnabled\":true,\"RecognitionCulture\":\"en-GB\"}");
+Check("wakeword settings: old voice.json without the field loads as on",
+    VoiceSettingsStore.Load(tmpWakeDir)?.WakeWordEnabled == true);
+VoiceSettingsStore.Save(tmpWakeDir, offSettings);
+var loadedOff = VoiceSettingsStore.Load(tmpWakeDir);
+Check("wakeword settings: explicit off survives Save/Load",
+    loadedOff is not null && loadedOff.WakeWordEnabled == false);
+Check("wakeword settings: off is written to the file",
+    File.ReadAllText(Path.Combine(tmpWakeDir, "voice.json"))
+        .Contains("\"WakeWordEnabled\":false"));
+VoiceSettingsStore.Save(tmpWakeDir, VoiceSettings.Defaults);
+Check("wakeword settings: on survives Save/Load",
+    VoiceSettingsStore.Load(tmpWakeDir)?.WakeWordEnabled == true);
+Directory.Delete(tmpWakeDir, recursive: true);
+
 // ---------- N4: Voice-source Presence transitions ----------
 var voiceMachine = new PresenceStateMachine();
 Check("voice presence: Voice can set Listening",

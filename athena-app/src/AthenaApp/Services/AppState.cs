@@ -63,6 +63,14 @@ public sealed class AppState
     /// <summary>Directory holding voice.json (set by MainWindow; %APPDATA%\Athena).</summary>
     public string VoiceSettingsDir { get; set; } = "";
 
+    /// <summary>N7 wake-word listener (its own SAPI engine), created by MainWindow; null when SAPI/mic unavailable.</summary>
+    public WakeWordService? WakeWord { get; set; }
+
+    /// <summary>N7: raised when the wake-word toggle in Settings changes, so MainWindow can start/stop the listener live.</summary>
+    public event Action? WakeWordSettingChanged;
+
+    public void NotifyWakeWordSettingChanged() => WakeWordSettingChanged?.Invoke();
+
     public void SaveVoiceSettings()
     {
         if (!string.IsNullOrWhiteSpace(VoiceSettingsDir))
