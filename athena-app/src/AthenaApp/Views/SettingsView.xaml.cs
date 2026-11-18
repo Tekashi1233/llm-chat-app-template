@@ -231,6 +231,50 @@ public partial class SettingsView : UserControl, IRefreshable
                 _state.SaveVoiceSettings();
             }
         }
+
+        // Wake word (N7): say "athena" to bring the window back.
+        // Availability follows the dictation recognizer — same SAPI
+        // engine family, same mic — so no second probe is needed.
+        voiceBody.Children.Add(ViewHelpers.BodyText("Wake word"));
+        var wakeAvailable = voiceSvc is not null && voiceSvc.IsRecognizerAvailable;
+        if (!wakeAvailable)
+        {
+            var wakeCheckDisabled = new CheckBox
+            {
+                Content = "Wake up with 'athena'",
+                IsChecked = state.VoiceSettings.WakeWordEnabled,
+                IsEnabled = false,
+                Margin = new Thickness(0, 2, 0, 0),
+            };
+            voiceBody.Children.Add(wakeCheckDisabled);
+            voiceBody.Children.Add(ViewHelpers.MutedText(
+                "Wake-word listening isn't available on this PC — no speech recognizer or microphone was found, " +
+                "so saying 'athena' can't bring the window back."));
+        }
+        else
+        {
+            var wakeCheck = new CheckBox
+            {
+                Content = "Wake up with 'athena'",
+                IsChecked = state.VoiceSettings.WakeWordEnabled,
+                Margin = new Thickness(0, 2, 0, 0),
+            };
+            wakeCheck.Checked += (_, _) => SetWakeWordEnabled(true);
+            wakeCheck.Unchecked += (_, _) => SetWakeWordEnabled(false);
+            voiceBody.Children.Add(wakeCheck);
+
+            void SetWakeWordEnabled(bool on)
+            {
+                _state.VoiceSettings = _state.VoiceSettings with { WakeWordEnabled = on };
+                _state.SaveVoiceSettings();
+                _state.NotifyWakeWordSettingChanged();
+            }
+        }
+        voiceBody.Children.Add(ViewHelpers.MutedText(
+            "Say 'athena' and the ATHENA window pops back up — it never sends a message on its own. " +
+            "Keyword spotting can miss the word and can false-trigger on similar sounds; it needs a working " +
+            "microphone and the app running. All recognition is local and offline — no audio leaves this laptop — " +
+            "and it does not work while the laptop is asleep or the app is fully quit."));
         ContentPanel.Children.Add(voiceCard);
 
         // Device.

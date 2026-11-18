@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Windows;
@@ -8,6 +9,7 @@ using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Athena.Core;
 using Athena.Views;
+using WinForms = System.Windows.Forms;
 
 namespace Athena;
 
@@ -40,6 +42,12 @@ public partial class MainWindow : Window
     private DispatcherTimer? _glowTimer;
     private bool _glowSwap;
 
+    // ----- N7 tray + wake word -----
+    private WinForms.NotifyIcon? _trayIcon;
+    private bool _reallyQuitting;
+    private bool _trayBalloonShown;
+    private bool _wakeWordPausedForDictation;
+
     /// <summary>Same folder as the DPAPI config (%APPDATA%\Athena); voice.json lives here too.</summary>
     private static string AppDataDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Athena");
@@ -53,8 +61,10 @@ public partial class MainWindow : Window
         _chatView.ReplyReceived += FlashReactor;
         _state.ConversationChanged += () => UpdateLayoutFromMessages();
         _state.PresenceChanged += ApplyPresence;
+        _state.WakeWordSettingChanged += OnWakeWordSettingChanged;
         Loaded += async (_, _) => await InitialiseAsync();
         Closing += MainWindow_Closing;
+        Closed += MainWindow_Closed;
         PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape && Overlay.Visibility == Visibility.Visible)
@@ -131,9 +141,13 @@ public partial class MainWindow : Window
             SetStatus("Not signed in — menu (···) → Settings to sign in", Colors.Gray);
 
         await LoadDataAsync();
-        _chatView.RenderConversation();
         _chatView.FocusInput();
-        InitialiseVoice();
+        // N7: render history at Background priority so the input is
+        // live first — a long history must not delay typing.
+        _ = Dispatcher.InvokeAsync(_chatView.RenderConversation, DispatcherPriority.Background);
+        // N7: SAPI init can be slow — defer it past first paint so the
+        // window appears instantly. InitialiseVoice itself is unchanged.
+        _ = Dispatcher.InvokeAsync(InitialiseVoice, DispatcherPriority.Background);
     }
 
     /// <summary>
@@ -165,6 +179,11 @@ public partial class MainWindow : Window
                 if (_state.PresenceStatus.State == PresenceState.Listening)
                     _state.SetPresenceState(PresenceState.Idle, PresenceSource.Voice, "Idle");
             };
+            // N7: dictation and the wake-word listener share one mic,
+            // so they never run at once — the mic button pauses the
+            // wake word, and it resumes when dictation stops.
+            voice.ListeningStarted += PauseWakeWordForDictation;
+            voice.ListeningStopped += ResumeWakeWordAfterDictation;
             _state.Voice = voice;
             _chatView.RefreshVoiceControls();
         }
@@ -174,13 +193,201 @@ public partial class MainWindow : Window
             _state.Voice = null;
             _chatView.RefreshVoiceControls();
         }
+
+        // N7: the wake word is independent of dictation/TTS — its own
+        // try/catch, so a voice failure never kills it and vice versa.
+        CreateWakeWordService();
+    }
+
+    /// <summary>
+    /// N7: build the wake-word listener (its own SAPI engine) and
+    /// start it when the setting is on. Never throws — a machine
+    /// without SAPI or a mic just gets no wake word, and the app
+    /// works without it.
+    /// </summary>
+    private void CreateWakeWordService()
+    {
+        try
+        {
+            if (_state.WakeWord is not null) return;
+            var wake = new WakeWordService();
+            wake.WakeWordHeard += ShowWindowForWakeWord;
+            _state.WakeWord = wake;
+            if (_state.VoiceSettings.WakeWordEnabled)
+                wake.Start();
+        }
+        catch (Exception)
+        {
+            // Wake word stays unavailable; the app works without it.
+            _state.WakeWord = null;
+        }
+    }
+
+    /// <summary>N7: the Settings toggle flipped — start or stop the listener live, no restart needed.</summary>
+    private void OnWakeWordSettingChanged()
+    {
+        if (_state.VoiceSettings.WakeWordEnabled)
+        {
+            CreateWakeWordService();
+            TryStartWakeWordWithRetry();
+        }
+        else
+        {
+            _state.WakeWord?.Stop();
+        }
+    }
+
+    /// <summary>N7: start the listener; one retry a second later if the mic is still busy winding down from dictation.</summary>
+    private void TryStartWakeWordWithRetry()
+    {
+        if (!_state.VoiceSettings.WakeWordEnabled) return;
+        if (_state.WakeWord?.Start() != false) return;
+        var retry = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        retry.Tick += (_, _) =>
+        {
+            retry.Stop();
+            if (_state.VoiceSettings.WakeWordEnabled)
+                _state.WakeWord?.Start();
+        };
+        retry.Start();
+    }
+
+    private void PauseWakeWordForDictation()
+    {
+        if (_state.WakeWord is { IsListening: true })
+        {
+            _wakeWordPausedForDictation = true;
+            _state.WakeWord.Stop();
+        }
+    }
+
+    private void ResumeWakeWordAfterDictation()
+    {
+        if (!_wakeWordPausedForDictation) return;
+        _wakeWordPausedForDictation = false;
+        TryStartWakeWordWithRetry();
+    }
+
+    /// <summary>
+    /// N7: the wake word only opens the interface — it never sends
+    /// anything. If the presence machine refuses Listening (e.g. a
+    /// chat is Thinking — only Chat may clear that), the window
+    /// still shows and takes focus; the state just stays as it was.
+    /// </summary>
+    private void ShowWindowForWakeWord()
+    {
+        if (!IsVisible)
+            Show();
+        if (WindowState == WindowState.Minimized)
+            WindowState = WindowState.Normal;
+        Activate();
+        // Topmost flick: forces the window to the front even when
+        // another app has focus, then hands topmost back.
+        Topmost = true;
+        Topmost = false;
+        _state.SetPresenceState(PresenceState.Listening, PresenceSource.Voice, "Listening…");
+        _chatView.FocusInput();
+    }
+
+    // ----- Tray-resident window (N7) -----
+    // Closing the window hides it to the tray instead of quitting:
+    // the window stays loaded, so "athena" (or the tray menu)
+    // brings it back instantly. Real quit is only from the tray
+    // menu. Minimizing stays minimizing — only Close hides to tray.
+
+    private void EnsureTrayIcon()
+    {
+        if (_trayIcon is not null) return;
+        try
+        {
+            // Icon straight from the exe (its ApplicationIcon,
+            // icon.ico) — no extra file to ship, and it survives
+            // single-file publish. If it cannot be read, there is
+            // no tray icon and closing falls through to a real quit.
+            System.Drawing.Icon? icon = null;
+            try
+            {
+                var exePath = Environment.ProcessPath
+                    ?? Process.GetCurrentProcess().MainModule?.FileName;
+                if (!string.IsNullOrWhiteSpace(exePath))
+                    icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
+            }
+            catch (Exception) { }
+            if (icon is null) return;
+            var menu = new WinForms.ContextMenuStrip();
+            var showItem = new WinForms.ToolStripMenuItem("Show ATHENA");
+            showItem.Click += (_, _) => ShowWindowForWakeWord();
+            var quitItem = new WinForms.ToolStripMenuItem("Quit");
+            quitItem.Click += (_, _) => QuitFromTray();
+            menu.Items.Add(showItem);
+            menu.Items.Add(quitItem);
+            _trayIcon = new WinForms.NotifyIcon
+            {
+                Icon = icon,
+                Text = "ATHENA",
+                Visible = true,
+                ContextMenuStrip = menu,
+            };
+            _trayIcon.DoubleClick += (_, _) => ShowWindowForWakeWord();
+        }
+        catch (Exception)
+        {
+            _trayIcon = null;
+        }
+    }
+
+    private void QuitFromTray()
+    {
+        _reallyQuitting = true;
+        Close();
+    }
+
+    private void DisposeTrayIcon()
+    {
+        if (_trayIcon is null) return;
+        try { _trayIcon.Visible = false; } catch (Exception) { }
+        try { _trayIcon.Dispose(); } catch (Exception) { }
+        _trayIcon = null;
     }
 
     private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        // Stop any speech/recognition first.
+        if (!_reallyQuitting)
+        {
+            EnsureTrayIcon();
+            if (_trayIcon is not null)
+            {
+                e.Cancel = true;
+                Hide();
+                if (!_trayBalloonShown)
+                {
+                    _trayBalloonShown = true;
+                    try
+                    {
+                        _trayIcon.ShowBalloonTip(3000, "ATHENA",
+                            "ATHENA is still listening in the tray — say 'athena' to bring it back",
+                            WinForms.ToolTipIcon.Info);
+                    }
+                    catch (Exception) { }
+                }
+                return;
+            }
+            // No tray icon available: fall through to a real quit.
+            _reallyQuitting = true;
+        }
+        // Real quit: stop speech/recognition first.
         try { _state.Voice?.Dispose(); } catch (Exception) { }
+        try { _state.WakeWord?.Dispose(); } catch (Exception) { }
+        DisposeTrayIcon();
         StopGlowTimer();
+    }
+
+    private void MainWindow_Closed(object? sender, EventArgs e)
+    {
+        // ShutdownMode is OnExplicitShutdown (App.xaml), so the app
+        // only exits here — hiding the last window must not quit it.
+        if (_reallyQuitting)
+            Application.Current.Shutdown();
     }
 
     /// <summary>Re-validates the auth and reloads model info + backup (used after a sign-in change).</summary>
@@ -204,9 +411,15 @@ public partial class MainWindow : Window
     {
         if (!_state.HasAuth) return;
         // Best effort: views surface their own errors if these fail.
+        // N7: the two calls are independent — start both at once so
+        // readiness pays one round-trip, not two back-to-back.
+        // Each await still swallows its own failure (best effort).
+        var modelInfoTask = _state.Data.GetModelInfoAsync();
+        var backupTask = _state.Data.GetBackupAsync(
+            _state.ApiKey, authToken: _state.AuthToken);
         try
         {
-            _state.ModelInfo = await _state.Data.GetModelInfoAsync();
+            _state.ModelInfo = await modelInfoTask;
         }
         catch (Exception)
         {
@@ -214,8 +427,7 @@ public partial class MainWindow : Window
         }
         try
         {
-            _state.Backup = await _state.Data.GetBackupAsync(
-                _state.ApiKey, authToken: _state.AuthToken);
+            _state.Backup = await backupTask;
         }
         catch (Exception)
         {

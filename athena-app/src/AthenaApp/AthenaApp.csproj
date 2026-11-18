@@ -27,6 +27,16 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- N7: tray icon needs System.Windows.Forms.NotifyIcon. A plain
+         FrameworkReference, NOT <UseWindowsForms>true</UseWindowsForms>:
+         that flag also adds global usings for System.Drawing and
+         System.Windows.Forms, which make Color/Button/Brush/UserControl
+         ambiguous in every WPF file. MainWindow reaches WinForms
+         through its explicit `using WinForms = ...` alias instead. -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Athena.Core\Athena.Core.csproj" />
     <!-- N4 voice: SAPI via System.Speech 8.0.0 (net8.0-windows).
          The .nupkg lives in ~/nuget-local/; restore uses the
