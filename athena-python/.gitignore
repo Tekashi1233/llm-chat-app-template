@@ -1,0 +1,10 @@
+# ATHENA Python v1 — never commit the venv, build outputs, or caches.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+.pytest_cache/
+*.log
