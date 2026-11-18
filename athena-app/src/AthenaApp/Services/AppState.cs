@@ -63,6 +63,18 @@ public sealed class AppState
     /// <summary>Directory holding voice.json (set by MainWindow; %APPDATA%\Athena).</summary>
     public string VoiceSettingsDir { get; set; } = "";
 
+    /// <summary>App preferences (N8), loaded from settings.json at startup. Autostart ON by default.</summary>
+    public AppSettings AppSettings { get; set; } = AppSettings.Defaults;
+
+    /// <summary>Directory holding settings.json (set by MainWindow; %APPDATA%\Athena).</summary>
+    public string AppSettingsDir { get; set; } = "";
+
+    public void SaveAppSettings()
+    {
+        if (!string.IsNullOrWhiteSpace(AppSettingsDir))
+            AppSettingsStore.Save(AppSettingsDir, AppSettings);
+    }
+
     /// <summary>N7 wake-word listener (its own SAPI engine), created by MainWindow; null when SAPI/mic unavailable.</summary>
     public WakeWordService? WakeWord { get; set; }
 

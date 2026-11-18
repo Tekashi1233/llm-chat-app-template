@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using Athena.Core;
@@ -276,6 +277,48 @@ public partial class SettingsView : UserControl, IRefreshable
             "microphone and the app running. All recognition is local and offline — no audio leaves this laptop — " +
             "and it does not work while the laptop is asleep or the app is fully quit."));
         ContentPanel.Children.Add(voiceCard);
+
+        // Startup (N8): start with Windows, hidden in the tray.
+        var startupCard = ViewHelpers.Card("Startup", out var startupBody);
+        var autostartCheck = new CheckBox
+        {
+            Content = "Start ATHENA when I log in",
+            IsChecked = state.AppSettings.AutostartEnabled,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        var autostartStatus = ViewHelpers.MutedText("");
+        autostartCheck.Checked += (_, _) => SetAutostartEnabled(true);
+        autostartCheck.Unchecked += (_, _) => SetAutostartEnabled(false);
+        startupBody.Children.Add(autostartCheck);
+        startupBody.Children.Add(ViewHelpers.MutedText(
+            "ATHENA starts hidden in the tray when you log in, listening for 'athena' when the wake word is on — " +
+            "no need to launch it yourself. Quitting from the tray menu only closes this session; " +
+            "ATHENA will still start at your next login. Turn this off to stop that."));
+        startupBody.Children.Add(autostartStatus);
+        ContentPanel.Children.Add(startupCard);
+
+        void SetAutostartEnabled(bool on)
+        {
+            _state.AppSettings = _state.AppSettings with { AutostartEnabled = on };
+            _state.SaveAppSettings();
+            autostartStatus.Text = "";
+            try
+            {
+                var store = new WindowsAutostartStore();
+                var exePath = Environment.ProcessPath
+                    ?? Process.GetCurrentProcess().MainModule?.FileName;
+                if (!string.IsNullOrWhiteSpace(exePath))
+                {
+                    if (on) AutostartPolicy.EnsureEnabled(store, exePath);
+                    else AutostartPolicy.EnsureDisabled(store);
+                }
+            }
+            catch (Exception ex)
+            {
+                autostartStatus.Text =
+                    "Couldn't update the Windows startup setting — it will try again next launch. " + ex.Message;
+            }
+        }
 
         // Device.
         var deviceCard = ViewHelpers.Card("Device", out var deviceBody);

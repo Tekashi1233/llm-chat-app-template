@@ -48,12 +48,31 @@ public partial class MainWindow : Window
     private bool _trayBalloonShown;
     private bool _wakeWordPausedForDictation;
 
+    // ----- N8 autostart / --tray -----
+    private readonly bool _startHidden;
+    private bool _initialised;
+
     /// <summary>Same folder as the DPAPI config (%APPDATA%\Athena); voice.json lives here too.</summary>
     private static string AppDataDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Athena");
 
-    public MainWindow()
+    public MainWindow() : this(StartupOptions.Default)
     {
+    }
+
+    /// <summary>
+    /// N8: with --tray the window starts hidden — the tray icon is
+    /// live from launch and initialisation runs immediately (the
+    /// Loaded event only fires when the window is first shown, so
+    /// a hidden window would otherwise never initialise). Whether
+    /// the wake-word listener starts is decided by the persisted
+    /// setting, not by --tray: CreateWakeWordService only starts
+    /// it when WakeWordEnabled is on, so a --tray launch with the
+    /// wake word off sits quietly in the tray and does not listen.
+    /// </summary>
+    public MainWindow(StartupOptions options)
+    {
+        _startHidden = options.StartHidden;
         InitializeComponent();
         _chatView = new ChatView(_state, SetStatus);
         ChatArea.Content = _chatView;
@@ -62,7 +81,7 @@ public partial class MainWindow : Window
         _state.ConversationChanged += () => UpdateLayoutFromMessages();
         _state.PresenceChanged += ApplyPresence;
         _state.WakeWordSettingChanged += OnWakeWordSettingChanged;
-        Loaded += async (_, _) => await InitialiseAsync();
+        Loaded += async (_, _) => await InitialiseOnceAsync();
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
         PreviewKeyDown += (_, e) =>
@@ -73,11 +92,85 @@ public partial class MainWindow : Window
                 e.Handled = true;
             }
         };
+        if (_startHidden)
+        {
+            // N8: hide before the window is ever shown (App only
+            // calls Show() on a normal launch), make the tray live,
+            // and initialise now — Loaded only fires when the window
+            // is first shown, so a hidden window would otherwise
+            // never initialise. _chatView exists by now, so
+            // InitialiseAsync is safe to run.
+            Visibility = Visibility.Hidden;
+            EnsureTrayIcon();
+            if (_trayIcon is not null)
+            {
+                _trayBalloonShown = true;
+                try
+                {
+                    // Neutral wording on purpose: the wake-word
+                    // setting is not loaded yet, so this must not
+                    // claim listening when the wake word is off.
+                    _trayIcon.ShowBalloonTip(3000, "ATHENA",
+                        "ATHENA started with Windows and is running in the tray — double-click the tray icon to open it",
+                        WinForms.ToolTipIcon.Info);
+                }
+                catch (Exception) { }
+            }
+            _ = InitialiseOnceAsync();
+        }
+    }
+
+    /// <summary>
+    /// N8: initialisation runs exactly once — either from the
+    /// constructor on a --tray launch (hidden window, no Loaded
+    /// yet) or from Loaded on a normal launch. When the window is
+    /// shown later after a --tray start, Loaded fires again and
+    /// this is a no-op.
+    /// </summary>
+    private async Task InitialiseOnceAsync()
+    {
+        if (_initialised) return;
+        _initialised = true;
+        await InitialiseAsync();
+    }
+
+    /// <summary>
+    /// N8: reconcile the Run key with the autostart setting. Cleans
+    /// a stale entry first (exe path no longer exists), then
+    /// registers the key when the setting is on or removes it when
+    /// off. Best effort — a registry failure never breaks startup.
+    /// The policy only writes when the entry is missing or wrong;
+    /// it never re-registers blindly every launch.
+    /// </summary>
+    private void ApplyAutostartSetting()
+    {
+        try
+        {
+            var store = new WindowsAutostartStore();
+            AutostartPolicy.CleanStaleEntry(store, File.Exists);
+            var exePath = Environment.ProcessPath
+                ?? Process.GetCurrentProcess().MainModule?.FileName;
+            if (string.IsNullOrWhiteSpace(exePath)) return;
+            if (_state.AppSettings.AutostartEnabled)
+                AutostartPolicy.EnsureEnabled(store, exePath);
+            else
+                AutostartPolicy.EnsureDisabled(store);
+        }
+        catch (Exception)
+        {
+            // Autostart is a nicety; startup must not fail over it.
+        }
     }
 
     private async Task InitialiseAsync()
     {
         SetStatus("Starting…", Colors.Gray);
+        // N8: app settings (settings.json) + autostart. Defaults
+        // are autostart ON — the first run of this build registers
+        // the Run key, which is the approved behaviour.
+        _state.AppSettingsDir = AppDataDir;
+        _state.AppSettings = AppSettingsStore.Load(AppDataDir) ?? AppSettings.Defaults;
+        ApplyAutostartSetting();
         // The N3 Island is cancelled: drop its leftover position file.
         try { File.Delete(Path.Combine(AppDataDir, "island.json")); } catch (Exception) { }
         try
@@ -121,6 +214,11 @@ public partial class MainWindow : Window
 
         if (!_state.HasAuth)
         {
+            // N8: a --tray launch with no sign-in cannot stay hidden
+            // — the setup dialog would pop up over nothing. Show the
+            // window so the user can sign in, then carry on.
+            if (_startHidden)
+                ShowWindowForWakeWord();
             SetStatus("Not signed in", Colors.Gray);
             _chatView.AddSystemMessage(
                 "Welcome to ATHENA. To start chatting, sign in with your " +
