@@ -1237,6 +1237,211 @@ else
         voiceCs.Contains("new DictationGrammar()") && !voiceCs.Contains("GrammarBuilder"));
 }
 
+// ---------- N8: autostart ----------
+// --tray parsing: the flag, case-insensitive, anywhere in args.
+Check("n8: --tray starts hidden",
+    StartupOptions.Parse(new[] { "--tray" }).StartHidden);
+Check("n8: no args starts visible",
+    !StartupOptions.Parse(Array.Empty<string>()).StartHidden);
+Check("n8: --TRAY is case-insensitive",
+    StartupOptions.Parse(new[] { "--TRAY" }).StartHidden);
+Check("n8: unrelated args do not start hidden",
+    !StartupOptions.Parse(new[] { "--other" }).StartHidden);
+Check("n8: --tray among other args starts hidden",
+    StartupOptions.Parse(new[] { "--other", "--tray", "x" }).StartHidden);
+Check("n8: --trayx is not --tray",
+    !StartupOptions.Parse(new[] { "--trayx" }).StartHidden);
+Check("n8: default options start visible",
+    !StartupOptions.Default.StartHidden);
+
+// Run-key value: quoted exe path + --tray (paths with spaces).
+const string n8Exe = @"C:\Program Files\Athena\Athena.exe";
+Eq("n8: entry value quotes a path with spaces",
+    AutostartPolicy.BuildEntryValue(n8Exe),
+    "\"C:\\Program Files\\Athena\\Athena.exe\" --tray");
+Eq("n8: entry value for a spaceless path is still quoted",
+    AutostartPolicy.BuildEntryValue(@"C:\Athena\Athena.exe"),
+    "\"C:\\Athena\\Athena.exe\" --tray");
+Eq("n8: value name is ATHENA", AutostartPolicy.ValueName, "ATHENA");
+Check("n8: run key is the per-user Run key",
+    AutostartPolicy.RunKeyPath.Contains(@"CurrentVersion\Run"));
+
+// ParseExePath: quoted, unquoted, garbage.
+Eq("n8: parse quoted path with spaces",
+    AutostartPolicy.ParseExePath("\"C:\\Program Files\\Athena\\Athena.exe\" --tray"), n8Exe);
+Eq("n8: parse unquoted path with arg",
+    AutostartPolicy.ParseExePath(@"C:\Athena\Athena.exe --tray"), @"C:\Athena\Athena.exe");
+Eq("n8: parse bare path",
+    AutostartPolicy.ParseExePath(@"C:\Athena\Athena.exe"), @"C:\Athena\Athena.exe");
+Check("n8: parse null/empty returns null",
+    AutostartPolicy.ParseExePath(null) is null
+    && AutostartPolicy.ParseExePath("") is null
+    && AutostartPolicy.ParseExePath("   ") is null);
+Check("n8: parse unclosed quote returns null",
+    AutostartPolicy.ParseExePath("\"C:\\Athena\\Athena.exe") is null);
+Check("n8: parse empty quotes returns null",
+    AutostartPolicy.ParseExePath("\"\" --tray") is null);
+
+// HasTrayArgument: its own token, case-insensitive.
+Check("n8: built value carries --tray",
+    AutostartPolicy.HasTrayArgument(AutostartPolicy.BuildEntryValue(n8Exe)));
+Check("n8: bare path carries no --tray",
+    !AutostartPolicy.HasTrayArgument(n8Exe));
+Check("n8: --TRAY counts",
+    AutostartPolicy.HasTrayArgument("\"C:\\Athena\\Athena.exe\" --TRAY"));
+Check("n8: --trayx does not count",
+    !AutostartPolicy.HasTrayArgument("\"C:\\Athena\\Athena.exe\" --trayx"));
+Check("n8: null value carries no --tray",
+    !AutostartPolicy.HasTrayArgument(null));
+
+// Policy against an in-memory fake store (the real registry
+// store is Windows-only; see the structural checks below).
+var n8Store = new FakeAutostartStore();
+Check("n8: empty store is not enabled",
+    !AutostartPolicy.IsEnabled(n8Store, n8Exe));
+Check("n8: EnsureEnabled writes the entry",
+    AutostartPolicy.EnsureEnabled(n8Store, n8Exe)
+    && n8Store.Entry == AutostartPolicy.BuildEntryValue(n8Exe));
+Check("n8: enabled once registered",
+    AutostartPolicy.IsEnabled(n8Store, n8Exe));
+var n8Writes = n8Store.Writes;
+Check("n8: EnsureEnabled does NOT re-write a correct entry (no blind re-register)",
+    !AutostartPolicy.EnsureEnabled(n8Store, n8Exe) && n8Store.Writes == n8Writes);
+n8Store.Entry = "\"C:\\Other\\Athena.exe\" --tray";
+Check("n8: entry pointing at another exe is not enabled",
+    !AutostartPolicy.IsEnabled(n8Store, n8Exe));
+Check("n8: EnsureEnabled rewrites a wrong-path entry",
+    AutostartPolicy.EnsureEnabled(n8Store, n8Exe)
+    && n8Store.Entry == AutostartPolicy.BuildEntryValue(n8Exe));
+n8Store.Entry = "\"" + n8Exe + "\"";
+Check("n8: entry without --tray is not enabled",
+    !AutostartPolicy.IsEnabled(n8Store, n8Exe));
+Check("n8: EnsureEnabled rewrites an entry missing --tray",
+    AutostartPolicy.EnsureEnabled(n8Store, n8Exe)
+    && n8Store.Entry == AutostartPolicy.BuildEntryValue(n8Exe));
+Check("n8: EnsureDisabled removes the entry",
+    AutostartPolicy.EnsureDisabled(n8Store) && n8Store.Entry is null);
+Check("n8: EnsureDisabled is a no-op when absent",
+    !AutostartPolicy.EnsureDisabled(n8Store));
+Check("n8: disabled once removed",
+    !AutostartPolicy.IsEnabled(n8Store, n8Exe));
+
+// Stale-entry cleanup: only a parseable path to a missing file
+// is removed; anything else is left alone.
+var n8Stale = new FakeAutostartStore
+{
+    Entry = "\"C:\\No\\Such\\Athena.exe\" --tray",
+};
+Check("n8: stale entry (missing file) is removed",
+    AutostartPolicy.CleanStaleEntry(n8Stale, _ => false)
+    && n8Stale.Entry is null);
+var n8LiveFile = Path.Combine(
+    Path.GetTempPath(), "athena-n8-live-" + Guid.NewGuid().ToString("N") + ".exe");
+File.WriteAllText(n8LiveFile, "fake exe");
+var n8Live = new FakeAutostartStore
+{
+    Entry = "\"" + n8LiveFile + "\" --tray",
+};
+Check("n8: live entry (file exists) is kept",
+    !AutostartPolicy.CleanStaleEntry(n8Live, File.Exists)
+    && n8Live.Entry is not null);
+File.Delete(n8LiveFile);
+var n8Garbage = new FakeAutostartStore { Entry = "\"unclosed" };
+Check("n8: unparseable entry is left alone, never deleted",
+    !AutostartPolicy.CleanStaleEntry(n8Garbage, _ => false)
+    && n8Garbage.Entry is not null);
+var n8Empty = new FakeAutostartStore();
+Check("n8: no entry means nothing to clean",
+    !AutostartPolicy.CleanStaleEntry(n8Empty, _ => false));
+
+// AppSettings: autostart ON by default, in settings.json —
+// NOT in voice.json (autostart is not a voice preference).
+Check("n8: app settings default to autostart on",
+    AppSettings.Defaults.AutostartEnabled);
+var tmpAppDir = Path.Combine(
+    Path.GetTempPath(), "athena-appsettings-test-" + Guid.NewGuid().ToString("N"));
+Check("n8: app settings missing file returns null",
+    AppSettingsStore.Load(tmpAppDir) is null);
+AppSettingsStore.Save(tmpAppDir, AppSettings.Defaults with { AutostartEnabled = false });
+var loadedAppOff = AppSettingsStore.Load(tmpAppDir);
+Check("n8: app settings explicit off survives Save/Load",
+    loadedAppOff is not null && loadedAppOff.AutostartEnabled == false);
+Check("n8: off is written to settings.json, not voice.json",
+    File.ReadAllText(Path.Combine(tmpAppDir, "settings.json"))
+        .Contains("\"AutostartEnabled\":false")
+    && !File.Exists(Path.Combine(tmpAppDir, "voice.json")));
+Directory.CreateDirectory(tmpAppDir);
+File.WriteAllText(Path.Combine(tmpAppDir, "settings.json"), "{}");
+Check("n8: old settings.json without the field loads as on",
+    AppSettingsStore.Load(tmpAppDir)?.AutostartEnabled == true);
+File.WriteAllText(Path.Combine(tmpAppDir, "settings.json"), "{ not json");
+Check("n8: corrupt settings.json returns null",
+    AppSettingsStore.Load(tmpAppDir) is null);
+Directory.Delete(tmpAppDir, recursive: true);
+
+// N8 structural: the window itself needs Windows, and the
+// registry store can never run on this VM — these checks assert
+// the wiring is present and the listening gate is untouched.
+// The --tray launch must NOT force-start the listener: the only
+// start in CreateWakeWordService is behind the persisted
+// WakeWordEnabled setting, exactly as on a normal launch.
+if (appDir is null)
+{
+    failures.Add("n8: AthenaApp dir not found for structural checks");
+    Console.WriteLine("FAIL n8: AthenaApp dir not found for structural checks");
+}
+else
+{
+    var n8AppXaml = File.ReadAllText(Path.Combine(appDir, "App.xaml"));
+    var n8MainCs = File.ReadAllText(Path.Combine(appDir, "MainWindow.xaml.cs"));
+    var n8SettingsCs = File.ReadAllText(Path.Combine(appDir, "Views", "SettingsView.xaml.cs"));
+    Check("n8: App has no StartupUri (OnStartup builds the window)",
+        !n8AppXaml.Contains("StartupUri"));
+    var appCs = File.ReadAllText(Path.Combine(appDir, "App.xaml.cs"));
+    Check("n8: App parses --tray and builds MainWindow with it",
+        appCs.Contains("StartupOptions.Parse(e.Args)")
+        && appCs.Contains("new MainWindow(options)"));
+    Check("n8: App shows the window only on a normal launch",
+        appCs.Contains("if (!options.StartHidden)") && appCs.Contains("window.Show()"));
+    Check("n8: MainWindow takes StartupOptions",
+        n8MainCs.Contains("public MainWindow(StartupOptions options)"));
+    Check("n8: --tray starts the window hidden",
+        n8MainCs.Contains("Visibility = Visibility.Hidden"));
+    Check("n8: --tray makes the tray icon live at launch",
+        n8MainCs.Contains("EnsureTrayIcon()"));
+    Check("n8: hidden launch initialises without waiting for Loaded",
+        n8MainCs.Contains("InitialiseOnceAsync()"));
+    Check("n8: initialisation runs exactly once",
+        n8MainCs.Contains("_initialised") && n8MainCs.Contains("if (_initialised) return;"));
+    Check("n8: MainWindow reconciles the Run key at startup",
+        n8MainCs.Contains("ApplyAutostartSetting()")
+        && n8MainCs.Contains("CleanStaleEntry")
+        && n8MainCs.Contains("EnsureEnabled")
+        && n8MainCs.Contains("EnsureDisabled"));
+    Check("n8: MainWindow loads app settings before applying autostart",
+        n8MainCs.Contains("AppSettingsStore.Load(AppDataDir)"));
+    Check("n8: --tray launch with no sign-in shows the window to sign in",
+        n8MainCs.Contains("if (_startHidden)") && n8MainCs.Contains("ShowWindowForWakeWord()"));
+    Check("n8: wake-word start is still gated on the persisted setting (no force-start on --tray)",
+        n8MainCs.Contains("if (_state.VoiceSettings.WakeWordEnabled)")
+        && n8MainCs.Contains("wake.Start();"));
+    Check("n8: no recording/storage/transmission in the autostart code",
+        !File.ReadAllText(Path.Combine(appDir, "..", "Athena.Core", "Autostart.cs"))
+            .Contains("Record") && !n8MainCs.Contains("RecordAudio"));
+    var winStoreCs = File.ReadAllText(Path.Combine(appDir, "Services", "WindowsAutostartStore.cs"));
+    Check("n8: real store uses the per-user Run key",
+        winStoreCs.Contains("Registry.CurrentUser")
+        && winStoreCs.Contains("AutostartPolicy.RunKeyPath")
+        && winStoreCs.Contains("AutostartPolicy.ValueName"));
+    Check("n8: Settings offers the autostart toggle",
+        n8SettingsCs.Contains("Start ATHENA when I log in"));
+    Check("n8: Settings says tray Quit only ends the session",
+        n8SettingsCs.Contains("only closes this session"));
+    Check("n8: Settings toggle writes through the policy",
+        n8SettingsCs.Contains("EnsureEnabled") && n8SettingsCs.Contains("EnsureDisabled")
+        && n8SettingsCs.Contains("SaveAppSettings()"));
+}
+
 Console.WriteLine($"\n{passes} passed, {failures.Count} failed");
 return failures.Count == 0 ? 0 : 1;
 
@@ -1296,4 +1501,14 @@ sealed class CaptureHandler : HttpMessageHandler
             Content = new StringContent(_body, Encoding.UTF8, "application/json"),
         };
     }
+}
+
+/// <summary>In-memory IAutostartStore for N8 tests: stands in for the Windows-only registry store.</summary>
+sealed class FakeAutostartStore : IAutostartStore
+{
+    public string? Entry;
+    public int Writes;
+    public string? GetEntry() => Entry;
+    public void SetEntry(string value) { Entry = value; Writes++; }
+    public void RemoveEntry() { Entry = null; }
 }
