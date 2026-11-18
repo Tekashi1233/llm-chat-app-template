@@ -272,6 +272,30 @@ def test_send_message_offline_is_plain_language():
     assert "Couldn't reach the service" in str(exc_info.value)
 
 
+def test_send_message_without_key_is_401_not_silent_fallback():
+    # Regression (2026-11-18, real laptop): a missing/unreadable site
+    # key raised status 0, which the provider treats as a transport
+    # failure and silently falls back to Ollama — so the user saw the
+    # misleading "Ollama isn't running" message instead of the real
+    # problem. A missing key is an auth problem: 401, no fallback.
+    client = WorkerClient(client=mock_client(lambda r: httpx.Response(200, text=SSE_OK)))
+    with pytest.raises(AthenaApiError) as exc_info:
+        client.send_message("hi", "c")
+    assert exc_info.value.status_code == 401
+    assert "No token and no site key" in str(exc_info.value)
+
+
+def test_provider_does_not_fall_back_on_missing_key():
+    slot1 = FakeWorkerSlot(
+        error=AthenaApiError(401, "No token and no site key to authenticate with.")
+    )
+    slot2 = FakeOllamaSlot(reply="local")
+    p = _provider(slot1, slot2)
+    text, slot, note = p.generate([{"role": "user", "content": "hi"}])
+    assert slot == "worker" and "No token and no site key" in text
+    assert slot2.calls == 0
+
+
 # ----------------------------------------------------------------------
 # WorkerClient — validate_auth + reads
 # ----------------------------------------------------------------------

@@ -130,7 +130,12 @@ def _auth_headers(
         return {"Authorization": "Bearer " + token.strip()}
     if api_key and api_key.strip():
         return {"X-Vesper-Key": api_key.strip()}
-    raise AthenaApiError(0, "No token and no site key to authenticate with.")
+    # 401, not 0: a missing key is an auth/configuration problem, and
+    # the provider only falls back to Ollama on status 0 (transport
+    # failure) and 429/5xx. Raising 0 here made a missing/unreadable
+    # key silently fall back to Ollama, so the user saw the misleading
+    # "Ollama isn't running" message instead of the real problem.
+    raise AthenaApiError(401, "No token and no site key to authenticate with.")
 
 
 def _map_chat_error(status: int) -> AthenaApiError:
