@@ -451,12 +451,22 @@ def test_main_window_build_app_idle_and_conversation(qapp, tmp_path):
     from athena.interfaces.desktop.main_window import build_app
 
     app, window = build_app(settings_dir=tmp_path)
+    window.show()
+    _pump(0.1)
+    # Idle: the ChatView is VISIBLE (its input bar is the only place
+    # to type) but the message FEED is hidden. v1 hid the whole view
+    # at idle, which hid the input with it — the first message could
+    # never be typed.
     assert window.chat_view.message_count == 0
-    assert window.chat_view.isHidden()  # idle: chat area hidden
-    window._set_conversation_layout()
     assert not window.chat_view.isHidden()
+    assert window.chat_view.feed_visible is False
+    assert window.chat_view.input_box.isVisible()
+    assert window.chat_view.input_box.isEnabled()
+    window._set_conversation_layout()
+    assert window.chat_view.feed_visible is True
     window._set_idle_layout()
-    assert window.chat_view.isHidden()
+    assert window.chat_view.feed_visible is False
+    assert not window.chat_view.isHidden()
     window._really_quitting = True
     window.close()
 
@@ -523,3 +533,293 @@ def test_tray_icon_labels_refresh(qapp):
     assert tray._listening_action.text() == "Listening: Off"
     assert tray._pause_action.isEnabled() is False
     tray.hide()
+
+# ---------------------------------------------------------------------------
+# Idle-input bug + mic dictation wiring (v1.1 fix).
+#
+# v1 hid the whole ChatView at idle, which hid the only input box:
+# the first message could never be typed, and the voice toggle was
+# unreachable too. The mic button only ever posted "not wired".
+# These tests pin the fix: input bar visible at idle, dictation
+# fills the input without sending, voice toggle reachable at idle.
+# ---------------------------------------------------------------------------
+
+
+def _pump(seconds: float = 0.1) -> None:
+    """Run the Qt event loop briefly so queued signals deliver."""
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    loop = QEventLoop()
+    QTimer.singleShot(int(seconds * 1000), loop.quit)
+    loop.exec()
+
+
+def _wait_until(predicate, timeout_s: float = 3.0) -> bool:
+    """Pump the event loop until ``predicate`` holds or we time out."""
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        _pump(0.05)
+    return predicate()
+
+
+class FakeWorker:
+    """Duck-type worker for build_app: send_message -> canned reply."""
+
+    def __init__(self, reply: str = "fake reply") -> None:
+        self.received: list[str] = []
+        self._reply = reply
+
+    def send_message(self, text: str) -> str:
+        self.received.append(text)
+        return self._reply
+
+
+class FakeTTS:
+    """Duck-type TTS: records what it was asked to speak."""
+
+    def __init__(self) -> None:
+        self.spoken: list[str] = []
+        self.stopped = 0
+
+    def speak(self, text: str) -> bool:
+        self.spoken.append(text)
+        return True
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+    def list_voices(self) -> list[str]:
+        return []
+
+
+class FakeWake:
+    """Duck-type wake-word listener: records pause/resume calls."""
+
+    def __init__(self) -> None:
+        self.started = False
+        self.paused = 0
+        self.resumed = 0
+
+    def start(self) -> bool:
+        self.started = True
+        return True
+
+    def stop(self) -> None:
+        self.started = False
+
+    def pause(self) -> None:
+        self.paused += 1
+
+    def resume(self) -> None:
+        self.resumed += 1
+
+
+class FakeDictation:
+    """Scripted dictation: yields the given RecognitionEvents, then
+    the stream ends. ``available``/``model_present`` model the
+    engine state; the fake ensurer in the download tests flips
+    them to True."""
+
+    def __init__(self, events, available: bool = True, model_present: bool = True) -> None:
+        from athena.voice.stt import RecognitionEvent
+
+        self._events = [RecognitionEvent(**e) if isinstance(e, dict) else e for e in events]
+        self.is_available = available
+        self.model_present = model_present
+        self.last_error: str | None = None
+        self.stopped = False
+        self.started = 0
+
+    def transcribe(self):
+        self.started += 1
+        yield from self._events
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+@needs_qt
+def test_main_window_idle_input_bar_visible_and_first_message_flow(qapp, tmp_path):
+    """Regression (v1 bug): on first launch there was nowhere to
+    type — the input bar lived inside the hidden ChatView. Now the
+    bar is visible and enabled at idle, sits at the bottom of the
+    window, and typing + Enter sends the first message, shows the
+    feed and shrinks the reactor."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from athena.interfaces.desktop.main_window import build_app
+    from athena.interfaces.desktop import theme
+
+    worker = FakeWorker()
+    app, window = build_app(worker=worker, settings_dir=tmp_path)
+    window.show()
+    _pump(0.2)
+
+    # Idle: feed hidden, input bar visible, enabled, at the bottom.
+    assert window.chat_view.message_count == 0
+    assert window.chat_view.feed_visible is False
+    assert window.chat_view.input_box.isVisible()
+    assert window.chat_view.input_box.isEnabled()
+    assert window.chat_view.send_button.isEnabled()
+    box = window.chat_view.input_box
+    # The glass input bar sits at the window bottom: the ChatView's
+    # bottom edge is flush with the window's (the 12px bottom margin
+    # of the bar is inside the view).
+    assert window.height() - window.chat_view.geometry().bottom() <= 2
+
+    # Typing + Enter sends the first message and the feed appears.
+    box.setText("hello athena")
+    QTest.keyClick(box, Qt.Key.Key_Return)
+    assert _wait_until(lambda: window.chat_view.message_count == 2)
+    assert worker.received == ["hello athena"]
+    assert window.chat_view.feed_visible is True
+    assert window._reactor.width() == 84
+    assert window._wordmark.font().pointSize() == theme.WORDMARK_CHAT_PT
+    window._really_quitting = True
+    window.close()
+
+
+@needs_qt
+def test_chat_view_mic_dictation_fills_input_without_sending(qapp):
+    """Mic button starts a real dictation session; recognised text
+    fills the input via set_mic_text and nothing is sent."""
+    from athena.interfaces.desktop.chat_view import ChatView
+
+    fake = FakeDictation(
+        [{"text": "hel", "is_final": False}, {"text": "hello world", "is_final": True}]
+    )
+    view = ChatView(send_fn=lambda _t: "ok")
+    started: list[bool] = []
+    stopped: list[bool] = []
+    view.dictation_started.connect(lambda: started.append(True))
+    view.dictation_stopped.connect(lambda: stopped.append(True))
+    view.refresh_voice_controls(True, True, True)
+    view.set_dictation(fake)
+    assert view.mic_button.isEnabled()
+
+    view.mic_button.click()
+    assert view.mic_button.text() == "Stop"
+    assert _wait_until(lambda: stopped == [True])
+    assert view.input_box.text() == "hello world"
+    # Filled from the mic — but nothing was sent.
+    assert view.message_count == 0
+    assert view._mic_filled is True
+    assert started == [True]
+    assert view.mic_button.text() == "Mic"
+
+
+@needs_qt
+def test_chat_view_mic_downloads_model_when_missing(qapp):
+    """Model missing: tapping the mic downloads it once (in a
+    thread, UI responsive), then dictation starts and fills the
+    input. A failed download is reported honestly, not stuck."""
+    from athena.interfaces.desktop.chat_view import ChatView
+
+    fake = FakeDictation(
+        [{"text": "open notepad", "is_final": True}],
+        available=False,
+        model_present=False,
+    )
+    calls: list[bool] = []
+
+    def fake_ensurer(download: bool = False):
+        calls.append(download)
+        fake.is_available = True
+        fake.model_present = True
+        return "/fake/model"
+
+    view = ChatView(send_fn=lambda _t: "ok")
+    view.refresh_voice_controls(True, True, True)
+    view.set_dictation(fake, model_ensurer=fake_ensurer)
+    view.mic_button.click()
+    assert _wait_until(lambda: view.input_box.text() == "open notepad")
+    assert calls == [True]
+    assert view.message_count == 0
+
+    # Failure path: ensurer returns None -> honest message, mic back.
+    fake2 = FakeDictation([], available=False, model_present=False)
+    view2 = ChatView(send_fn=lambda _t: "ok")
+    view2.refresh_voice_controls(True, True, True)
+    view2.set_dictation(fake2, model_ensurer=lambda download=False: None)
+    view2.mic_button.click()
+    assert _wait_until(lambda: view2.message_count == 1)
+    assert view2._downloading_model is False
+    assert view2.mic_button.text() == "Mic"
+
+
+@needs_qt
+def test_main_window_voice_toggle_enabled_at_idle_with_tts(qapp, tmp_path):
+    """Voice toggle is visible and enabled at idle whenever TTS is
+    available; turning it on makes replies speak. The Settings
+    voice section also opens from the idle screen."""
+    from athena.interfaces.desktop.main_window import build_app
+    from athena.interfaces.desktop.settings_view import SettingsView
+
+    tts = FakeTTS()
+    worker = FakeWorker()
+    app, window = build_app(worker=worker, tts=tts, settings_dir=tmp_path)
+    window.show()
+    _pump(0.2)
+
+    toggle = window.chat_view.voice_toggle
+    assert toggle.isVisible()
+    assert toggle.isEnabled()
+    assert toggle.text() == "Voice: Off"
+    toggle.click()
+    assert toggle.text() == "Voice: On"
+
+    window.chat_view.input_box.setText("hello")
+    window.chat_view.send()
+    assert _wait_until(lambda: tts.spoken == ["fake reply"])
+    assert worker.received == ["hello"]
+
+    # Settings -> Voice opens from the idle screen (no message needed).
+    # _show_section alone does not raise the overlay — the menu does.
+    window._show_menu()
+    window._show_section("Settings")
+    assert window._overlay.isVisible()
+    assert window.findChild(SettingsView) is not None
+    window._really_quitting = True
+    window.close()
+
+
+@needs_qt
+def test_main_window_mic_pauses_wake_word(qapp, tmp_path):
+    """While dictating, the wake-word listener pauses (so dictation
+    cannot re-trigger it) and resumes after. Same as C# N7."""
+    from athena.interfaces.desktop.main_window import build_app
+
+    fake = FakeDictation([{"text": "hello world", "is_final": True}])
+    wake = FakeWake()
+    app, window = build_app(
+        worker=FakeWorker(), wake=wake, dictation=fake, settings_dir=tmp_path
+    )
+    window.show()
+    _pump(0.2)
+    assert window.chat_view.mic_button.isEnabled()
+
+    window.chat_view.mic_button.click()
+    assert _wait_until(lambda: wake.paused == 1)
+    assert _wait_until(lambda: wake.resumed == 1)
+    assert window.chat_view.input_box.text() == "hello world"
+    assert window.chat_view.message_count == 0
+    window._really_quitting = True
+    window.close()
+
+
+@needs_qt
+def test_chat_view_mic_without_dictation_is_honest(qapp):
+    """No dictation engine wired: the mic button is disabled, and
+    a direct tap reports honestly instead of pretending to listen."""
+    from athena.interfaces.desktop.chat_view import ChatView
+
+    view = ChatView(send_fn=lambda _t: "ok")
+    view.refresh_voice_controls(True, True, True)
+    assert view.mic_button.isEnabled() is False
+    view._on_mic_clicked()
+    assert view.message_count == 1  # one honest system line

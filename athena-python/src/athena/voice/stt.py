@@ -20,6 +20,7 @@ import json
 import logging
 import shutil
 import tempfile
+import threading
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -179,6 +180,7 @@ class VoskDictation:
         self._recognizer_factory = recognizer_factory
         self._audio_stream_factory = audio_stream_factory
         self.last_error: str | None = None
+        self._stop_requested = threading.Event()
 
     @property
     def is_available(self) -> bool:
@@ -191,6 +193,20 @@ class VoskDictation:
             return True
         except Exception:
             return False
+
+    @property
+    def model_present(self) -> bool:
+        """True when the model directory is installed (even if the
+        Vosk engine itself cannot be imported). The UI uses this to
+        tell "model missing, download it" apart from "engine
+        missing, dictation cannot work here"."""
+        return find_model(self.model_dir) is not None
+
+    def stop(self) -> None:
+        """Ask an in-progress :meth:`transcribe` to return promptly
+        (at the next audio chunk, ~250 ms). Safe to call when
+        nothing is running."""
+        self._stop_requested.set()
 
     def _make_recognizer(self, model_path: Path):
         if self._recognizer_factory is not None:
@@ -229,6 +245,7 @@ class VoskDictation:
         ever yielded, never sent.
         """
         self.last_error = None
+        self._stop_requested.clear()
         model_path = find_model(self.model_dir)
         if model_path is None:
             self.last_error = model_missing_message(self.model_dir)
@@ -242,6 +259,8 @@ class VoskDictation:
             return
         try:
             for chunk in self._audio_chunks():
+                if self._stop_requested.is_set():
+                    return
                 if not chunk:
                     continue
                 try:

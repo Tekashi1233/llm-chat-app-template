@@ -9,6 +9,7 @@ import (they are installed in the venv); it synthesises nothing.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -552,3 +553,41 @@ def test_greet_if_wake_word_only_on_wake_word():
     assert greet_if_wake_word(tts, ShowReason.LAUNCH) is False
     assert greet_if_wake_word(tts, ShowReason.TRAY_RESTORE) is False
     assert tts.calls == ["Welcome, boss."]  # spoken exactly once
+
+
+# ----------------------------------------------------------------------
+# Dictation stop (v1.1 idle-input fix): stop() ends an in-progress
+# transcribe promptly so the mic Stop button works.
+# ----------------------------------------------------------------------
+
+
+def test_dictation_stop_ends_transcription(tmp_path):
+    """A never-ending audio stream: stop() makes transcribe()
+    return within ~a second instead of listening forever."""
+    import itertools
+    import threading
+
+    model = tmp_path / "vosk-model-small-en-us-0.15"
+    (model / "am").mkdir(parents=True)
+    script = [('{"text": ""}', False)]
+
+    d = VoskDictation(
+        model_dir=tmp_path,
+        recognizer_factory=lambda p, sr: FakeRecognizer(script),
+        audio_stream_factory=_fake_audio(itertools.repeat(b"\x00\x00" * 10)),
+    )
+    events: list = []
+    done = threading.Event()
+
+    def _run():
+        events.extend(d.transcribe())
+        done.set()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    time.sleep(0.3)
+    d.stop()
+    assert done.wait(timeout=5.0), "transcribe() did not return after stop()"
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert events == []  # silence yields no events, and nothing was sent

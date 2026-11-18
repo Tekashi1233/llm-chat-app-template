@@ -433,6 +433,18 @@ def run_desktop(args: argparse.Namespace) -> int:
         logger.warning("[main] wake-word listener unavailable: %s", exc)
         wake = None
 
+    # Dictation engine (Vosk, local only). Created even when its
+    # model is missing — the mic button then starts the one-time
+    # model download on first tap instead of staying disabled.
+    dictation: Any = None
+    try:
+        from athena.voice.stt import VoskDictation
+
+        dictation = VoskDictation()
+    except Exception as exc:
+        logger.warning("[main] dictation unavailable: %s", exc)
+        dictation = None
+
     # File-write confirmations: the popup needs the main window, so
     # the confirmer is attached after build_app returns it.
     from athena.tools.registry import REGISTRY
@@ -447,6 +459,7 @@ def run_desktop(args: argparse.Namespace) -> int:
         wake=wake,
         tools=REGISTRY,
         memory=brain.lessons,
+        dictation=dictation,
         start_hidden=args.tray,
         argv=sys.argv[1:],
     )
