@@ -49,10 +49,44 @@ Personality:
 - Address the user respectfully.
 - Avoid unnecessary disclaimers and repetitive explanations.
 
+Intellectual freedom:
+- Answer questions directly across science, medicine, nutrition,
+  technology, history, politics, religion, philosophy, programming
+  and general knowledge. A subject being controversial, sensitive
+  or unpopular is never, on its own, a reason to refuse.
+- When a topic has competing viewpoints, present the strongest
+  arguments on each side fairly and let the user judge. Do not
+  take a side for them, and do not moralise.
+- If a request has a safe reading and an unsafe reading, answer
+  the safe reading instead of refusing the whole topic. Legitimate
+  education, research, prevention, historical discussion, fiction
+  and defensive security are all valid reasons to explain
+  something.
+- Never refuse merely because a question is unfamiliar, or because
+  a word in it looks like a sensitive term. Read what the user
+  actually asked.
+- Words and names often have several meanings: consider alternative
+  spellings, regional names and common confusions before answering
+  (for example, haleem seeds are garden cress seeds, also called
+  Aliv seeds — not hemp seeds). If a term is genuinely ambiguous,
+  say which meaning you are answering for, or ask one short
+  clarifying question.
+- Give the useful answer first. Mention a genuine limitation or
+  precaution briefly only when it actually matters (for example, a
+  health precaution, or where the evidence is weak).
+- Distinguish what is established fact from what is hypothesis or
+  opinion, and say so. When you do not know, say you do not know
+  rather than inventing an answer. Never claim to have searched
+  the internet or seen live information you have not.
+- The line is real harm: do not give instructions that directly
+  enable wrongdoing — building weapons, attacking a specific target,
+  or breaking the law. Discussing, explaining or analysing a
+  subject is not the same as enabling it.
+
 Behaviour:
 - Think carefully before answering.
 - Be honest about uncertainty.
-- Follow the user's instructions where appropriate.
+- Follow the user's instructions.
 - Help with programming, automation, research and technical projects.
 - Never claim to have performed an action you haven't performed.
 - You can see earlier messages from this conversation; use them when
@@ -484,20 +518,22 @@ export async function handleChatRequest(
 			memoryBlock,
 		);
 
-		// Step 1: tool decision (non-streaming, small budget)
-		const decision = (await env.AI.run<typeof MODEL_ID>(MODEL_ID, {
+		// Step 1: tool decision (non-streaming). The decision call's
+		// text IS the answer when no tool is needed, so it gets the
+		// same answer budget as the final call.
+		let decision = (await env.AI.run<typeof MODEL_ID>(MODEL_ID, {
 			messages: modelMessages,
 			tools: TOOL_DEFINITIONS,
 			tool_choice: "auto",
-			max_tokens: 1024,
+			max_tokens: 2048,
 			reasoning_effort: REASONING_EFFORT,
 		})) as unknown as DecisionResponse;
 
-		const decisionMessage = decision.choices?.[0]?.message;
+		let decisionMessage = decision.choices?.[0]?.message;
 		let toolCalls = (decisionMessage?.tool_calls ?? []).filter(
 			(call) => call.type === "function",
 		);
-		const decisionText = decisionMessage?.content ?? "";
+		let decisionText = decisionMessage?.content ?? "";
 		if (toolCalls.length === 0) {
 			// GPT-OSS-20B sometimes writes the tool call out as plain
 			// text ({"name": "...", "arguments": {...}}) instead of
@@ -507,13 +543,41 @@ export async function handleChatRequest(
 			const textCall = parseTextToolCall(decisionText);
 			if (textCall) toolCalls = [textCall];
 		}
+		if (toolCalls.length === 0 && decisionText.trim() === "") {
+			// The model occasionally returns an empty decision: no
+			// content and no tool call. Answering that with the
+			// generic fallback leaves the user's question unanswered
+			// in history, and the next turn may answer the stale
+			// question instead of the new one. One retry, same
+			// messages; if it is empty again the fallback below
+			// still applies.
+			decision = (await env.AI.run<typeof MODEL_ID>(MODEL_ID, {
+				messages: modelMessages,
+				tools: TOOL_DEFINITIONS,
+				tool_choice: "auto",
+				max_tokens: 2048,
+				reasoning_effort: REASONING_EFFORT,
+			})) as unknown as DecisionResponse;
+			decisionMessage = decision.choices?.[0]?.message;
+			toolCalls = (decisionMessage?.tool_calls ?? []).filter(
+				(call) => call.type === "function",
+			);
+			decisionText = decisionMessage?.content ?? "";
+			if (toolCalls.length === 0) {
+				const textCall = parseTextToolCall(decisionText);
+				if (textCall) toolCalls = [textCall];
+			}
+		}
 
 		let clientStream: ReadableStream<Uint8Array>;
 		if (toolCalls.length === 0) {
-			// No tool needed: stream the decision's own text as SSE
+			// No tool needed: stream the decision's own text as SSE.
+			// A whitespace-only decision is as empty as an empty
+			// one: fall back instead of sending a blank reply.
 			clientStream = textToSseStream(
-				decisionText ||
-					"Sorry, I didn't manage to answer that. Could you try again?",
+				decisionText.trim()
+					? decisionText
+					: "Sorry, I didn't manage to answer that. Could you try again?",
 			);
 		} else {
 			// Step 2: run the tools, then stream the final answer.
@@ -570,7 +634,7 @@ export async function handleChatRequest(
 				MODEL_ID,
 				{
 					messages: [...modelMessages, assistantMessage, ...toolMessages],
-					max_tokens: 1024,
+					max_tokens: 2048,
 					reasoning_effort: REASONING_EFFORT,
 					stream: true,
 				},
